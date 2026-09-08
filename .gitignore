@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+
+# Builds
+dist/
+build/
+.next/
+.turbo/
+out/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs & data
+*.log
+*.sqlite
+*.sqlite3
+*.db
+dev.db
+/tmp/
+coverage/
+
+# Generated API contract
+packages/domain/openapi.json
+.neon
