@@ -1,0 +1,6 @@
+{
+  "name": "MindMitra",
+  "description": "Cognitive care and memory-assistance platform for elderly people living with dementia in the North Eastern Region — SIH 2026, PS26003 (MDoNER).",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
