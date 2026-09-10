@@ -1,10 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { MyLifeTimelineEngine } from "./MyLifeTimelineEngine";
 import { PrepareForEngine } from "./PrepareForEngine";
 import { ExperienceBraidEngine } from "./ExperienceBraidEngine";
 import { SaveMemoryStudio } from "./SaveMemoryStudio";
 import { CognitiveTelemetryInspector } from "./CognitiveTelemetryInspector";
-import { GameTrialTelemetry, MemoryItem } from "../../domain/cognitive-experience";
+import { GameRuntimeHarness } from "../../game-runtime/harness/GameRuntimeHarness";
+import { GameTrialTelemetry, MemoryItem, GameSpec } from "../../domain/cognitive-experience";
 
 interface Props {
   onBackToDay?: () => void;
@@ -14,11 +15,44 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
   const [activeEngine, setActiveEngine] = useState<"none" | "timeline" | "prepare" | "braid" | "garland">("none");
   const [showMemoryStudio, setShowMemoryStudio] = useState<boolean>(false);
   const [showTelemetryInspector, setShowTelemetryInspector] = useState<boolean>(false);
+  const [showGameHarness, setShowGameHarness] = useState<boolean>(false);
   const [completionBanner, setCompletionBanner] = useState<string | null>(null);
+
+  // Orchestration state
+  const [orchestratedSpec, setOrchestratedSpec] = useState<GameSpec | null>(null);
+  const [isOrchestrating, setIsOrchestrating] = useState<boolean>(false);
 
   // Garland state (preserved gentle sensory activity)
   const [garlandFlowers, setGarlandFlowers] = useState<string[]>([]);
   const [flutePlaying, setFlutePlaying] = useState<boolean>(false);
+
+  const fetchDynamicOrchestration = async () => {
+    setIsOrchestrating(true);
+    try {
+      const res = await fetch("/v1/cognitive-studio/orchestrate-generation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          person_id: "person:purnima",
+          intent: "meaningful morning companion session with autobiographical and prospective grounding",
+          generation_mode: "dynamically_composed_level_c",
+          preferred_template: "experience_braid",
+        }),
+      });
+      const data = await res.json();
+      if (data.compiled_spec) {
+        setOrchestratedSpec(data.compiled_spec);
+      }
+    } catch (err) {
+      console.error("Failed to dynamically orchestrate experience:", err);
+    } finally {
+      setIsOrchestrating(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDynamicOrchestration();
+  }, []);
 
   const handleEngineComplete = async (telemetry: GameTrialTelemetry[], summary: string) => {
     setActiveEngine("none");
@@ -69,6 +103,28 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
         <CognitiveTelemetryInspector onClose={() => setShowTelemetryInspector(false)} />
       )}
 
+      {showGameHarness && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-[#faf8f5] w-full max-w-6xl max-h-[92vh] overflow-y-auto rounded-3xl border border-[#e8ded0] p-6 shadow-2xl relative">
+            <div className="flex justify-between items-center pb-4 mb-4 border-b border-[#ede4d4]">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🎮</span>
+                <span className="font-serif font-bold text-lg text-[#2c2824]">
+                  Personal Game Runtime Inspector & Test Harness
+                </span>
+              </div>
+              <button
+                onClick={() => setShowGameHarness(false)}
+                className="px-3 py-1.5 rounded-xl border border-[#d6cbba] bg-white text-xs font-semibold text-[#736a5e] hover:text-[#2c2824] transition"
+              >
+                ✕ Close Harness
+              </button>
+            </div>
+            <GameRuntimeHarness />
+          </div>
+        </div>
+      )}
+
       {/* Completion Banner */}
       {completionBanner && (
         <div className="bg-[#eaf0e4] border border-[#bdd4b0] text-[#2c401e] rounded-2xl p-4 text-center text-xs sm:text-sm shadow-sm transition">
@@ -95,6 +151,7 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
         <ExperienceBraidEngine
           onComplete={handleEngineComplete}
           onBack={() => setActiveEngine("none")}
+          spec={orchestratedSpec || undefined}
         />
       )}
 
@@ -230,45 +287,68 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
                 >
                   <span>🔬 Clinical & Intelligence Inspector</span>
                 </button>
+                <button
+                  onClick={() => setShowGameHarness(true)}
+                  className="bg-white border border-[#d6cbba] text-[#485935] text-xs font-medium px-4 py-2.5 rounded-xl hover:bg-[#f8f3ea] transition shadow-sm flex items-center gap-1.5"
+                >
+                  <span>🎮 Game Runtime Harness</span>
+                </button>
               </div>
             </div>
           </div>
 
           {/* ── FEATURED RECOMMENDED BRAID: PAST, PRESENT & 4 PM VISIT ── */}
-          <div
-            onClick={() => setActiveEngine("braid")}
-            className="cursor-pointer bg-[#faf6f0] border-2 border-[#dfd4c0] hover:border-[#485935] rounded-3xl p-6 sm:p-8 shadow-sm transition duration-200 transform hover:-translate-y-0.5"
-          >
+          <div className="bg-[#faf6f0] border-2 border-[#dfd4c0] hover:border-[#485935] rounded-3xl p-6 sm:p-8 shadow-sm transition duration-200">
             <div className="flex flex-col lg:flex-row gap-6 items-center">
-              <div className="w-full lg:w-1/3 h-56 rounded-2xl overflow-hidden bg-[#e8e0d2] relative shadow-inner">
+              <div
+                onClick={() => setActiveEngine("braid")}
+                className="w-full lg:w-1/3 h-56 rounded-2xl overflow-hidden bg-[#e8e0d2] relative shadow-inner cursor-pointer"
+              >
                 <img
                   src="/assets/images/vintage_assamese_wedding_1789020439671.jpg"
                   alt="Experience Braid"
                   className="w-full h-full object-cover"
                 />
                 <div className="absolute bottom-3 left-3 bg-[#2c2824]/85 text-[#f5ebd7] text-xs px-3 py-1 rounded-full font-serif backdrop-blur-sm">
-                  Recommended by Cognitive Engine
+                  {isOrchestrating ? "Orchestrating..." : "Agentic Multi-Step RAG"}
                 </div>
               </div>
 
               <div className="w-full lg:w-2/3 space-y-3">
-                <div className="flex items-center gap-2">
-                  <span className="bg-[#9e472a]/15 text-[#732a15] text-xs font-semibold px-2.5 py-0.5 rounded-full uppercase">
-                    Experience Braid
-                  </span>
-                  <span className="text-xs text-[#736a5e]">Multi-Phase Journey</span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="bg-[#9e472a]/15 text-[#732a15] text-xs font-semibold px-2.5 py-0.5 rounded-full uppercase">
+                      Experience Braid
+                    </span>
+                    <span className="text-xs text-[#736a5e]">
+                      {orchestratedSpec ? "Level C: Dynamically Composed" : "Multi-Phase Journey"}
+                    </span>
+                  </div>
+                  <button
+                    onClick={fetchDynamicOrchestration}
+                    disabled={isOrchestrating}
+                    className="text-[11px] text-[#485935] hover:text-[#2c2824] bg-white border border-[#d6cbba] px-3 py-1 rounded-lg transition flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                  >
+                    <span>{isOrchestrating ? "Re-tuning..." : "✨ Re-tune Experience"}</span>
+                  </button>
                 </div>
-                <h3 className="text-2xl font-serif font-medium text-[#2c2824]">
-                  Past, Present & Granddaughter Rina's 4:00 PM Visit
+                <h3
+                  onClick={() => setActiveEngine("braid")}
+                  className="text-2xl font-serif font-medium text-[#2c2824] cursor-pointer hover:text-[#485935] transition"
+                >
+                  {orchestratedSpec?.title || "Past, Present & Granddaughter Rina's 4:00 PM Visit"}
                 </h3>
                 <p className="text-sm text-[#595043] leading-relaxed">
-                  A seamless journey starting with your 1968 wedding memories, bringing calm orientation to your sunny courtyard today, and getting ready for Rina's afternoon tea.
+                  {orchestratedSpec?.description || "A seamless journey starting with your 1968 wedding memories, bringing calm orientation to your sunny courtyard today, and getting ready for Rina's afternoon tea."}
                 </p>
-                <div className="pt-2 flex items-center justify-between">
+                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <span className="text-xs font-medium text-[#485935]">
-                    Estimated time: 4 - 6 minutes • Gentle & Soothing
+                    Estimated time: 4 - 6 minutes • 2-Choice Cognitive Comfort
                   </span>
-                  <button className="bg-[#485935] text-white text-xs font-medium px-5 py-2.5 rounded-xl hover:bg-[#384629] transition">
+                  <button
+                    onClick={() => setActiveEngine("braid")}
+                    className="bg-[#485935] text-white text-xs font-medium px-5 py-2.5 rounded-xl hover:bg-[#384629] transition shadow-sm"
+                  >
                     Begin Journey together →
                   </button>
                 </div>

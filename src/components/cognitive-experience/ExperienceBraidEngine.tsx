@@ -1,19 +1,20 @@
 import React, { useState } from "react";
-import { GameTrialTelemetry } from "../../domain/cognitive-experience";
+import { GameTrialTelemetry, GameSpec } from "../../domain/cognitive-experience";
 
 interface Props {
   onComplete: (telemetry: GameTrialTelemetry[], summary: string) => void;
   onBack: () => void;
+  spec?: GameSpec;
 }
 
-export const ExperienceBraidEngine: React.FC<Props> = ({ onComplete, onBack }) => {
+export const ExperienceBraidEngine: React.FC<Props> = ({ onComplete, onBack, spec }) => {
   const [activePhase, setActivePhase] = useState<"past" | "present" | "future">("past");
   const [completedPhases, setCompletedPhases] = useState<string[]>([]);
   const [audioPlaying, setAudioPlaying] = useState<boolean>(false);
 
   const handleNextPhase = (next: "present" | "future" | "complete") => {
     if (next === "complete") {
-      onComplete([], "Completed Full Experience Braid: Past, Present, and Future Orientation.");
+      onComplete([], `Completed Full Experience Braid: ${spec?.title || "Past, Present, and Future Orientation"}.`);
     } else {
       setCompletedPhases((prev) => [...prev, activePhase]);
       setActivePhase(next);
@@ -31,12 +32,17 @@ export const ExperienceBraidEngine: React.FC<Props> = ({ onComplete, onBack }) =
                 Signature Experience Braiding
               </span>
               <span className="text-xs text-[#736a5e]">MindMitra Multi-Temporal Studio</span>
+              {spec && (
+                <span className="text-[11px] bg-[#485935]/15 text-[#2e401e] font-medium px-2.5 py-0.5 rounded-full">
+                  Compiled Spec: {spec.id}
+                </span>
+              )}
             </div>
             <h2 className="text-2xl font-serif text-[#2c2824] mt-2 font-medium">
-              Experience Braid <span className="text-lg font-normal text-[#605546]">(স্মৃতিৰ তৰংগ)</span>
+              {spec?.title || "Experience Braid"} <span className="text-lg font-normal text-[#605546]">(স্মৃতিৰ তৰংগ)</span>
             </h2>
             <p className="text-[#595043] text-sm mt-1 max-w-2xl">
-              Weaving your past memories, present peaceful courtyard, and upcoming afternoon visit into a single continuous journey.
+              {spec?.description || "Weaving your past memories, present peaceful courtyard, and upcoming afternoon visit into a single continuous journey."}
             </p>
           </div>
           <button
