@@ -260,6 +260,8 @@ export interface Game8ContextPack {
 export type OrchestrationIntent =
   | { type: "play_game_7"; target_memory_id?: string; temporal_frame?: TemporalFrame }
   | { type: "play_game_8"; target_route_id?: string; target_destination_id?: string }
+  | { type: "play_timeline"; target_memory_id?: string; mode?: string }
+  | { type: "play_prepare_for"; target_event_id?: string }
   | { type: "preview_game_context"; game: "game_7" | "game_8" };
 
 export interface LangGraphState {

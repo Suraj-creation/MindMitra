@@ -88,3 +88,18 @@ export interface PwmReadResponse {
   fact: string;
   reason?: string;
 }
+
+export interface UserOnboardingProfile {
+  completed: boolean;
+  name: string;
+  honorific: "aita" | "baideu" | "custom";
+  place: string;
+  subplace: string;
+  language: string;
+  joys: string[];
+  sensitivities: string[];
+  trustedCaregiverName: string;
+  trustedCaregiverPhone: string;
+  completedAt?: string;
+}
+

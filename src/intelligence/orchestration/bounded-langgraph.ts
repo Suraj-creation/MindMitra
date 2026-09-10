@@ -271,7 +271,49 @@ export class BoundedGameOrchestrator {
     const start = Date.now();
     const { intent, person_id, selected_difficulty } = state;
 
-    if (intent.type === "play_game_7" || (intent.type === "preview_game_context" && intent.game === "game_7")) {
+    if (intent.type === "play_timeline") {
+      const contextPack = buildGame7ContextPack(person_id, {
+        customDifficulty: selected_difficulty,
+      });
+
+      return {
+        ...state,
+        selected_template: "my_life_timeline",
+        context_pack: contextPack,
+        snapshot_id: contextPack.snapshot_id,
+        execution_steps: [
+          ...state.execution_steps,
+          {
+            node: "game_template_selection",
+            timestamp: new Date().toISOString(),
+            duration_ms: Date.now() - start,
+            status: "ok",
+            details: `Selected template=my_life_timeline with snapshot ${contextPack.snapshot_id}`,
+          },
+        ],
+      };
+    } else if (intent.type === "play_prepare_for") {
+      const contextPack = buildGame8ContextPack(person_id, {
+        customDifficulty: selected_difficulty,
+      });
+
+      return {
+        ...state,
+        selected_template: "prepare_for",
+        context_pack: contextPack,
+        snapshot_id: contextPack.snapshot_id,
+        execution_steps: [
+          ...state.execution_steps,
+          {
+            node: "game_template_selection",
+            timestamp: new Date().toISOString(),
+            duration_ms: Date.now() - start,
+            status: "ok",
+            details: `Selected template=prepare_for with snapshot ${contextPack.snapshot_id}`,
+          },
+        ],
+      };
+    } else if (intent.type === "play_game_7" || (intent.type === "preview_game_context" && intent.game === "game_7")) {
       const contextPack = buildGame7ContextPack(person_id, {
         customDifficulty: selected_difficulty,
       });
@@ -329,7 +371,84 @@ export class BoundedGameOrchestrator {
 
     let spec: GameSpec;
 
-    if (selected_template === "reminiscence_journey_my_world") {
+    if (selected_template === "my_life_timeline") {
+      const items = [
+        {
+          id: "item_school",
+          year: 1956,
+          title: "School Days in Tezpur",
+          assamese_title: "তেজপুৰত বিদ্যালয়ৰ দিন",
+          photo_url: "/assets/images/tezpur_school_memory_1789020475367.jpg",
+          provenance: "prov:family_scrapbook_03",
+        },
+        {
+          id: "item_wedding",
+          year: 1968,
+          title: "Wedding Day in Tezpur",
+          assamese_title: "বিয়াৰ পবিত্ৰ দিনটো",
+          photo_url: "/assets/images/vintage_assamese_wedding_1789020439671.jpg",
+          provenance: "prov:caregiver_album_scan_01",
+        },
+        {
+          id: "item_teaching",
+          year: 1974,
+          title: "Teaching Assamese Literature",
+          assamese_title: "অসমীয়া সাহিত্যৰ অধ্যাপনা",
+          photo_url: "/assets/images/vintage_teacher_memory_1789020507713.jpg",
+          provenance: "prov:school_archives_02",
+        },
+      ];
+
+      const rawSpec: Partial<GameSpec> = {
+        template_key: "my_life_timeline",
+        instructions: {
+          primary_prompt: "Purnima baideu, let us look at your cherished life milestones together in order.",
+          spoken_prompt: "Aitâ, which beautiful life event came after your wedding in Tezpur?",
+          success_celebration: "Wonderful! You remembered your joyous years teaching literature.",
+        },
+        content_bindings: {
+          items,
+          two_choice_comparison: {
+            prompt: "Which of these milestones happened later in Tezpur?",
+            option_a_id: "item_wedding",
+            option_b_id: "item_teaching",
+            correct_id: "item_teaching",
+          },
+        },
+        provenance_refs: ["prov:caregiver_album_scan_01", "prov:school_archives_02", "prov:family_scrapbook_03"],
+      };
+
+      const validation = validateExperienceSpec(rawSpec);
+
+      spec = {
+        id: `spec_timeline_${Date.now()}`,
+        person_id,
+        template_key: "my_life_timeline",
+        version: "2.5.0",
+        generation_mode: "parametrically_personalised_level_b",
+        title: "My Life Timeline (জীৱনৰ স্মৃতিৰেখা)",
+        subtitle: "Chronological journey through cherished life milestones in Tezpur.",
+        objective: "Autobiographical memory sequencing and temporal orientation",
+        cognitive_family: "autobiographical_sequencing",
+        difficulty: selected_difficulty || 1,
+        modality: "photo_plus_voice",
+        culture: "Assamese (Tezpur)",
+        temporal_frame: "past",
+        content_bindings: rawSpec.content_bindings!,
+        scaffolding: {
+          hint_available: true,
+          family_voice_prompt: {
+            speaker_name: scaffolding_choice?.family_speaker || "Anu (Daughter)",
+            relationship: "daughter",
+            text: "Ma, you taught generations of girls with such dedication in Tezpur.",
+          },
+          retry_policy: "gentle_encouragement",
+        },
+        instructions: rawSpec.instructions!,
+        provenance_refs: rawSpec.provenance_refs!,
+        validation_status: validation,
+      };
+    } else if (selected_template === "reminiscence_journey_my_world") {
       const p7 = context_pack as Game7ContextPack;
       const topMemory = p7.memories[0] || {
         metadata: { id: "mem:wedding_ceremony", provenance: "prov:family_album" },
@@ -376,6 +495,62 @@ export class BoundedGameOrchestrator {
             speaker_name: scaffolding_choice?.family_speaker || "Anu (Daughter)",
             relationship: "daughter",
             text: "Ma, this was such a joyous family gathering with all our relatives in Tezpur.",
+          },
+          retry_policy: "gentle_encouragement",
+        },
+        instructions: rawSpec.instructions!,
+        provenance_refs: rawSpec.provenance_refs!,
+        validation_status: validation,
+      };
+    } else if (selected_template === "prepare_for") {
+      const rawSpec: Partial<GameSpec> = {
+        template_key: "prepare_for",
+        instructions: {
+          primary_prompt: "Purnima baideu, let us get ready for our afternoon visitor on the veranda.",
+          spoken_prompt: "Aitâ, granddaughter Rina is calling at 5:00 PM. Let's arrange our tea tray.",
+          success_celebration: "Everything is peaceful and beautifully prepared for your visit.",
+        },
+        content_bindings: {
+          visitor: {
+            name: "Rina",
+            relationship: "Granddaughter",
+            expected_time: "5:00 PM",
+            photo_url: "/assets/images/rina_granddaughter_portrait_1789020459100.jpg",
+          },
+          stages: [
+            { id: "s1", name: "Room Orientation", cue: "Ensure comfortable lighting on the veranda" },
+            { id: "s2", name: "Face & Hair Refresh", cue: "Gentle warm towel and sandalwood fragrance" },
+            { id: "s3", name: "Tea Tray Preparation", cue: "Arrange fresh Assam cardamom tea and pitha" },
+            { id: "s4", name: "Veranda Seating", cue: "Settle into the familiar wooden armchair" },
+            { id: "s5", name: "Welcome Visitor", cue: "Warm greeting as Rina arrives at the red gate" },
+          ],
+        },
+        provenance_refs: ["prov:visitor_schedule_01", "prov:caregiver_note_02"],
+      };
+
+      const validation = validateExperienceSpec(rawSpec);
+
+      spec = {
+        id: `spec_prepare_${Date.now()}`,
+        person_id,
+        template_key: "prepare_for",
+        version: "2.5.0",
+        generation_mode: "parametrically_personalised_level_b",
+        title: "Prepare-For: Veranda Visit & Tea Ceremony (প্ৰস্তুতি)",
+        subtitle: "Step-by-step orientation, afternoon tea preparation, and gentle courtyard reminder.",
+        objective: "Executive function sequencing and prospective memory orientation",
+        cognitive_family: "executive_planning",
+        difficulty: selected_difficulty || 1,
+        modality: "multi_modal",
+        culture: "Assamese (Tezpur)",
+        temporal_frame: "future",
+        content_bindings: rawSpec.content_bindings!,
+        scaffolding: {
+          hint_available: true,
+          family_voice_prompt: {
+            speaker_name: "Anu (Daughter)",
+            relationship: "daughter",
+            text: "Ma, Rina is so excited to share tea with you on the veranda this evening.",
           },
           retry_policy: "gentle_encouragement",
         },
