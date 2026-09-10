@@ -197,66 +197,67 @@ export default function FirewallDemoPage() {
             const decided = r !== undefined;
             const allowed = r?.allowed ?? false;
             return (
-              <Card
-                key={`${row.actor_id}:${row.purpose}`}
-                className={cn(
-                  "transition-colors",
-                  decided && allowed && "border-green-300 bg-green-50/50",
-                  decided && !allowed && "border-red-300 bg-red-50/50",
-                )}
-              >
-                <div className="flex items-center gap-4 flex-wrap">
-                  <div className="flex-1 min-w-[12rem]">
-                    <p className="font-medium text-[--color-text]">{row.label}</p>
-                    <p className="text-xs text-[--color-muted] font-mono">
-                      {row.actor_id} · purpose={row.purpose}
-                    </p>
-                  </div>
+              <div key={`${row.actor_id}:${row.purpose}`}>
+                <Card
+                  className={cn(
+                    "transition-colors",
+                    decided && allowed && "border-green-300 bg-green-50/50",
+                    decided && !allowed && "border-red-300 bg-red-50/50",
+                  )}
+                >
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="flex-1 min-w-[12rem]">
+                      <p className="font-medium text-[--color-text]">{row.label}</p>
+                      <p className="text-xs text-[--color-muted] font-mono">
+                        {row.actor_id} · purpose={row.purpose}
+                      </p>
+                    </div>
 
-                  {/* Decision */}
-                  <div className="flex-1 min-w-[14rem]">
-                    {!decided ? (
-                      <span className="text-sm text-[--color-muted]">
-                        Not yet attempted
-                      </span>
-                    ) : allowed ? (
-                      <div>
-                        <span className="inline-flex items-center gap-1 text-green-700 font-semibold text-sm">
-                          ✅ ALLOW
+                    {/* Decision */}
+                    <div className="flex-1 min-w-[14rem]">
+                      {!decided ? (
+                        <span className="text-sm text-[--color-muted]">
+                          Not yet attempted
                         </span>
-                        {r?.fact && (
-                          <p className="text-xs text-green-800 mt-0.5">
-                            → discloses:{" "}
-                            <strong>
-                              {String((r.fact.value as Record<string, unknown>).kinship_type)}
-                            </strong>
+                      ) : allowed ? (
+                        <div>
+                          <span className="inline-flex items-center gap-1 text-green-700 font-semibold text-sm">
+                            ✅ ALLOW
+                          </span>
+                          {r?.fact && (
+                            <p className="text-xs text-green-800 mt-0.5">
+                              → discloses:{" "}
+                              <strong>
+                                {String((r.fact.value as Record<string, unknown>).kinship_type)}
+                              </strong>
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div>
+                          <span className="inline-flex items-center gap-1 text-red-700 font-semibold text-sm">
+                            🛡️ DENY
+                          </span>
+                          <p className="text-xs text-red-700 mt-0.5 font-mono">
+                            {r?.reason_codes.join(", ")}
                           </p>
-                        )}
-                      </div>
-                    ) : (
-                      <div>
-                        <span className="inline-flex items-center gap-1 text-red-700 font-semibold text-sm">
-                          🛡️ DENY
-                        </span>
-                        <p className="text-xs text-red-700 mt-0.5 font-mono">
-                          {r?.reason_codes.join(", ")}
-                        </p>
-                        <p className="text-xs text-[--color-muted] mt-0.5">
-                          fact withheld · audited
-                        </p>
-                      </div>
-                    )}
-                  </div>
+                          <p className="text-xs text-[--color-muted] mt-0.5">
+                            fact withheld · audited
+                          </p>
+                        </div>
+                      )}
+                    </div>
 
-                  <button
-                    onClick={() => runRead(idx)}
-                    disabled={row.loading}
-                    className="shrink-0 rounded-lg bg-[--color-primary] text-white text-sm font-medium py-2 px-4 hover:bg-[--color-primary-hover] transition-colors disabled:opacity-50"
-                  >
-                    {row.loading ? "…" : "Attempt read"}
-                  </button>
-                </div>
-              </Card>
+                    <button
+                      onClick={() => runRead(idx)}
+                      disabled={row.loading}
+                      className="shrink-0 rounded-lg bg-[--color-primary] text-white text-sm font-medium py-2 px-4 hover:bg-[--color-primary-hover] transition-colors disabled:opacity-50"
+                    >
+                      {row.loading ? "…" : "Attempt read"}
+                    </button>
+                  </div>
+                </Card>
+              </div>
             );
           })}
         </div>

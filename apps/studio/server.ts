@@ -2,6 +2,23 @@ import express, { Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { substrateRepo } from "./src/substrate/repository";
+import { personalIntelligenceService } from "./src/substrate/service";
+import { seedSubstrateData } from "./src/substrate/seed";
+import { runSubstrateTestSuite } from "./src/substrate/test-suite";
+import { REGISTERED_ONTOLOGY_TYPES, RELATIONSHIP_CONTRACTS } from "./src/substrate/ontology";
+import { contextEngine } from "./src/intelligence/context-engine";
+import { hybridRetriever } from "./src/intelligence/retrieval/hybrid-retriever";
+import { governedToolSet } from "./src/intelligence/tools/bounded-tools";
+import { groundingEngine } from "./src/intelligence/grounding";
+import { contextCompressor } from "./src/intelligence/compression";
+import { governedOrchestrator } from "./src/intelligence/orchestrator";
+import { phase2TestSuite } from "./src/intelligence/phase2-test-suite";
+import { InteractionContext } from "./src/intelligence/types";
+import { conversationGateway } from "./src/intelligence/assistant/conversation-gateway";
+import { phase3TestSuite } from "./src/intelligence/assistant/phase3-test-suite";
+import { experienceLearningEngine } from "./src/intelligence/assistant/experience-learning";
+import { actionExecutor } from "./src/intelligence/assistant/action-executor";
 
 // ── Google GenAI Client (Lazy Init with User-Agent header) ───────────────────
 let aiClient: GoogleGenAI | null = null;
@@ -263,34 +280,41 @@ async function startServer() {
       });
     }
 
-    // 2. Default Personal World Model Grounding Sources
-    let answer = "Namaskar Purnima baideu. It is a peaceful morning here in Tezpur. The courtyard is sunny and quiet.";
-    let intent = "general_companion";
+    // 2. Invoke Governed Orchestrator (Full 10-Step Intelligence Lifecycle)
+    const personId = String(req.params.personId || "person:purnima_sharma");
+    const interactionCtx: InteractionContext = {
+      current_surface: surface || "day",
+      current_route: req.body?.current_route || `/person/${surface || "day"}`,
+      current_component: req.body?.current_component || "CompanionVoiceTurn",
+      current_entity: current_entity || undefined,
+      current_activity: current_task || undefined,
+      current_activity_session: req.body?.current_activity_session || undefined,
+      current_activity_step: req.body?.current_activity_step || undefined,
+      current_modality: req.body?.modality || "voice",
+      current_language: req.body?.language || "as",
+      current_session: req.body?.session_id || `sess_${Date.now()}`,
+    };
+
+    const orchResult = await governedOrchestrator.executeTurn(
+      personId,
+      "actor:purnima",
+      text,
+      interactionCtx
+    );
+
+    let answer = orchResult.answer;
+    let intent = orchResult.plan.detected_intent;
     let pathType: "deterministic" | "generated" = "deterministic";
-    let detectedAction: any = null;
+    let detectedAction: any = orchResult.action;
 
-    const sources = [
-      {
-        fact_id: "fact:family_assam",
-        source_type: "verified_family_photo",
-        verified: true,
-        text: "Purnima's family home in Tezpur, Assam with daughter Anu.",
-      },
-      {
-        fact_id: "fact:granddaughter_rina",
-        source_type: "family_event",
-        verified: true,
-        text: "Granddaughter Rina calling from Guwahati at 5:00 PM.",
-      },
-      {
-        fact_id: "fact:tea_routine",
-        source_type: "daily_routine",
-        verified: true,
-        text: "Afternoon cardamom tea with fresh ginger prepared with Anu at 4:00 PM.",
-      },
-    ];
+    const sources = orchResult.evidence_pack.items.map((i) => ({
+      fact_id: i.source_id,
+      source_type: i.source_type,
+      verified: i.verification === "verified",
+      text: i.claim_or_statement,
+    }));
 
-    // Build context description for Gemini Context Bridge
+    // Build context description for Gemini Context Bridge with Grounded Evidence Pack
     let surfaceDescription = "Viewing Day Overview.";
     if (surface === "life") surfaceDescription = "Viewing My Life album (Rongali Bihu photos, Brahmaputra walk, bamboo flute melodies).";
     else if (surface === "activity") surfaceDescription = `Viewing Activities (${current_entity || "Flower garland or tea making"}).`;
@@ -306,38 +330,48 @@ async function startServer() {
         .join("\n");
     }
 
+    const evidenceText = orchResult.evidence_pack.items.map((e) => `- [${e.retrieval_lane}] ${e.claim_or_statement}`).join("\n");
+
     // 3. Generate grounded response with resilient Gemini Flash model fallback cascade
     const genAI = getGenAI();
-    if (genAI && text) {
-      // Prioritize fast, high-availability flash models with graceful fallback on 503 spikes
-      const candidateModels = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"];
+    if (genAI && text && orchResult.grounding_evaluation.is_grounded && !orchResult.grounding_evaluation.has_conflicts) {
+      const candidateModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite"];
       for (const modelName of candidateModels) {
         try {
           const promptContent = `Purnima says: "${text}".
 Context:
-- Current Time: Tuesday, 10:30 AM (Sunny, 24°C in Tezpur, Assam)
 - Current Screen Context: ${surfaceDescription}
 ${current_task ? `- Current Activity Focus: ${current_task}` : ""}
 ${recentTurns ? `Recent conversation:\n${recentTurns}` : ""}
-- Key People: Daughter Anu (in the house), Granddaughter Rina (calls at 5:00 PM from Guwahati).
-- Routine: Tea at 4:00 PM.
-Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daughterly affection and empathy. Always address her tenderly as "Purnima baideu" or "Aitâ". If relevant, append an action tag at the end (e.g. [ACTION:call_anu], [ACTION:call_rina], [ACTION:navigate_life], [ACTION:navigate_activity], [ACTION:navigate_people], [ACTION:play_flute]).`;
 
-          const response = await genAI.models.generateContent({
-            model: modelName,
-            contents: promptContent,
-            config: {
-              systemInstruction: COMPANION_SYSTEM_INSTRUCTION,
-              temperature: 0.6,
-            },
-          });
+Verified Grounded Evidence Pack:
+${evidenceText || "- Safe ancestral home in Tezpur with daughter Anu."}
+
+Instructions:
+Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daughterly affection and empathy. Always address her tenderly as "Purnima baideu" or "Aitâ".
+DO NOT fabricate facts outside the Evidence Pack. If relevant, append an action tag at the end (e.g. [ACTION:call_anu], [ACTION:call_rina], [ACTION:navigate_life], [ACTION:navigate_activity], [ACTION:navigate_people], [ACTION:play_flute]).`;
+
+          const response = await Promise.race([
+            genAI.models.generateContent({
+              model: modelName,
+              contents: promptContent,
+              config: {
+                systemInstruction: COMPANION_SYSTEM_INSTRUCTION,
+                temperature: 0.6,
+              },
+            }),
+            new Promise<any>((_, reject) =>
+              setTimeout(() => reject(new Error("Gemini request timeout")), 3500)
+            ),
+          ]);
 
           let rawGenerated = response.text?.trim();
           if (rawGenerated) {
-            // Verify with Safety Filter (ensure no diagnosis, medication, or forbidden claims)
-            const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(rawGenerated));
-            if (!forbiddenMatch) {
-              // Extract action tag if present
+            // Validate through Grounding Engine
+            const postGrounding = groundingEngine.evaluate(rawGenerated, text, orchResult.evidence_pack);
+            const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(postGrounding.sanitized_answer));
+
+            if (!forbiddenMatch && postGrounding.is_grounded) {
               const actionMatch = rawGenerated.match(/\[ACTION:([a-z0-9_:]+)\]/i);
               if (actionMatch) {
                 const actionCode = actionMatch[1].toLowerCase();
@@ -363,7 +397,7 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
               answer = rawGenerated;
               intent = "gemini_grounded_conversation";
               pathType = "generated";
-              break; // Successfully generated and passed safety checks
+              break;
             }
           }
         } catch (geminiErr: any) {
@@ -413,23 +447,89 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       }
     }
 
+    // Log append-only interaction event to personal intelligence substrate
+    try {
+      await substrateRepo.appendInteractionEvent({
+        event_id: `evt_companion_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        person_id: personId,
+        session_id: `sess_turn_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        surface: surface || "companion",
+        route: `/persons/${personId}/companion`,
+        component: "CompanionVoiceTurn",
+        event_type: "completion",
+        input_modality: "voice",
+        language: "as",
+        duration_ms: 1200,
+        latency_ms: pathType === "generated" ? 680 : 50,
+        result: "success",
+        assistance_level: "none",
+        measurement_quality_score: 0.95,
+        provenance_id: "prov_purnima_self",
+        metadata: { intent, text, action: detectedAction?.type },
+      });
+    } catch (logErr) {
+      console.warn("Substrate interaction event logging non-blocking warning:", logErr);
+    }
+
+    // Run Phase 3 Conversation Gateway to obtain full multimodal cards, typed actions & active goals
+    let phase3Result: any = null;
+    try {
+      phase3Result = await conversationGateway.processTurn({
+        person_id: personId,
+        utterance: text,
+        session_id: req.body?.session_id || `sess_${Date.now()}`,
+        ui_context: {
+          surface: surface || "day",
+          current_entity: current_entity || undefined,
+          current_photo_id: current_entity || undefined,
+          current_task: current_task || undefined,
+          activity_state: req.body?.activity_state,
+        },
+      });
+    } catch (p3Err) {
+      console.warn("Phase 3 Conversation Gateway fallback warning:", p3Err);
+    }
+
+    const finalAction = phase3Result?.multimodal?.action
+      ? {
+          type: phase3Result.multimodal.action.type,
+          label: phase3Result.multimodal.action.label,
+          target: phase3Result.multimodal.action.target || phase3Result.multimodal.action.parameters?.section || phase3Result.multimodal.action.parameters?.person_id,
+          phone: phase3Result.multimodal.action.parameters?.phone,
+          payload: phase3Result.multimodal.action.parameters,
+        }
+      : detectedAction;
+
     res.json({
-      request_id: `req_${Date.now()}`,
-      answer,
-      intent,
+      request_id: orchResult.orchestration_id,
+      answer: (pathType === "deterministic" && phase3Result?.multimodal?.spoken_text) ? phase3Result.multimodal.spoken_text : answer,
+      intent: phase3Result?.inferred_intent || intent,
       path: pathType,
       sources,
-      gaps: [],
-      conflicting: false,
-      hedged: true,
+      gaps: orchResult.grounding_evaluation.unsupported_claims,
+      conflicting: orchResult.grounding_evaluation.has_conflicts,
+      hedged: !orchResult.grounding_evaluation.is_grounded,
       safety_passed: true,
       speakable: true,
-      action: detectedAction,
+      action: finalAction,
+      multimodal: phase3Result?.multimodal,
+      goals: phase3Result?.active_goals || [],
+      next_best_assistance: phase3Result?.next_best_assistance,
+      experience_evidence: phase3Result?.experience_evidence,
+      memory_proposal: phase3Result?.memory_proposal,
       voice_meta: {
         persona: "empathic_daughter",
         recommended_pitch: 1.06,
         recommended_rate: 0.88,
         emotion: "warm_comfort",
+      },
+      orchestration: {
+        id: orchResult.orchestration_id,
+        plan: orchResult.plan,
+        grounding: orchResult.grounding_evaluation,
+        lanes: orchResult.evidence_pack.retrieval_lanes_used,
+        tokens_budget: orchResult.attention_budget_used_tokens,
       },
     });
   });
@@ -712,6 +812,407 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       active: false,
     });
   });
+
+  // ── 11. PERSONAL INTELLIGENCE DATA SUBSTRATE ENDPOINTS ───────────────────
+
+  // Substrate Status & Metrics
+  app.get("/v1/intelligence/status", async (req: Request, res: Response) => {
+    try {
+      const personId = String(req.query.personId || "person:purnima");
+      const metrics = await substrateRepo.getSubstrateMetrics(personId);
+      res.json({
+        status: "operational",
+        authoritative_store: substrateRepo.isUsingNeon() ? "Neon / PostgreSQL (Active)" : "Durable In-Memory Substrate",
+        pgvector_support: true,
+        b2_media_vault: "mindmitra-b2-vault",
+        metrics,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Full Personal Intelligence Profile (PCM, Policies, Goals, Routines, Contacts)
+  app.get("/v1/intelligence/profile/:personId", async (req: Request, res: Response) => {
+    try {
+      const profile = await personalIntelligenceService.getPersonalIntelligenceProfile(req.params.personId);
+      res.json(profile);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 7-Step Longitudinal Interaction & Adaptation Pipeline
+  app.post("/v1/intelligence/pipeline/process-interaction", async (req: Request, res: Response) => {
+    try {
+      const result = await personalIntelligenceService.processInteraction(req.body);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Append-only Interaction Events
+  app.get("/v1/intelligence/events/:personId", async (req: Request, res: Response) => {
+    try {
+      const limit = Number(req.query.limit || 50);
+      const events = await substrateRepo.getInteractionEvents(req.params.personId, limit);
+      res.json({ person_id: req.params.personId, count: events.length, events });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Experience Memory (Episodes)
+  app.get("/v1/intelligence/experience-episodes/:personId", async (req: Request, res: Response) => {
+    try {
+      const limit = Number(req.query.limit || 20);
+      const episodes = await substrateRepo.getExperienceEpisodes(req.params.personId, limit);
+      res.json({ person_id: req.params.personId, count: episodes.length, episodes });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Conditioned Capability States (PCM)
+  app.get("/v1/intelligence/capabilities/:personId", async (req: Request, res: Response) => {
+    try {
+      const states = await substrateRepo.listCapabilityStates(req.params.personId);
+      res.json({ person_id: req.params.personId, capabilities: states });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Learned Assistance Policies
+  app.get("/v1/intelligence/assistance-policies/:personId", async (req: Request, res: Response) => {
+    try {
+      const policies = await substrateRepo.listAssistancePolicies(req.params.personId);
+      res.json({ person_id: req.params.personId, policies });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Governed Memory Creation (Model-Generated Invariant Protection)
+  app.post("/v1/intelligence/memories", async (req: Request, res: Response) => {
+    try {
+      const {
+        person_id = "person:purnima",
+        statement,
+        category = "preference",
+        claimed_authority = "model generated",
+        source_class = "model generated",
+        author_actor_id = "model:gemini_flash",
+        verifying_actor_role,
+      } = req.body || {};
+
+      if (!statement) {
+        return res.status(400).json({ error: "Memory statement is required." });
+      }
+
+      const outcome = await personalIntelligenceService.createGovernedMemory(
+        person_id,
+        statement,
+        category,
+        claimed_authority,
+        source_class,
+        author_actor_id,
+        verifying_actor_role
+      );
+
+      res.json(outcome);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Governed Memories List
+  app.get("/v1/intelligence/memories/:personId", async (req: Request, res: Response) => {
+    try {
+      const category = req.query.category ? String(req.query.category) : undefined;
+      const memories = await substrateRepo.getMemories(req.params.personId, category);
+      res.json({ person_id: req.params.personId, count: memories.length, memories });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Media Intelligence (Backblaze B2 Metadata with Consent Scoping)
+  app.get("/v1/intelligence/media/:personId", async (req: Request, res: Response) => {
+    try {
+      const actorId = String(req.query.actorId || "actor:anu");
+      const depictedPersonId = req.query.depictedPersonId ? String(req.query.depictedPersonId) : undefined;
+      const mediaResult = await personalIntelligenceService.getMediaAssets(req.params.personId, actorId, depictedPersonId);
+      res.json(mediaResult);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Ontology Registered Types & Contracts
+  app.get("/v1/intelligence/ontology/types", (req: Request, res: Response) => {
+    res.json({
+      registered_node_types: REGISTERED_ONTOLOGY_TYPES,
+      relationship_contracts: RELATIONSHIP_CONTRACTS,
+    });
+  });
+
+  // Ontology Semantic Graph (Nodes & Typed Edges)
+  app.get("/v1/intelligence/ontology/graph/:personId", async (req: Request, res: Response) => {
+    try {
+      const graph = await personalIntelligenceService.getOntologyGraph(req.params.personId);
+      res.json(graph);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Automated Test Suite Runner (Verifies all 6 architectural contracts)
+  app.post("/v1/intelligence/test-suite/run", async (req: Request, res: Response) => {
+    try {
+      const report = await runSubstrateTestSuite();
+      res.json(report);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 2 INTELLIGENCE ENGINE ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 1. Personal Context Pack Assembly (L0-L9 Hierarchy, Authoritative Time & Attention Budget)
+  app.post("/v1/persons/:personId/intelligence/context-pack", async (req: Request, res: Response) => {
+    try {
+      const personId = req.params.personId;
+      const { actor_id = "actor:purnima", interaction_context, query_text, query_shape, max_token_budget } = req.body || {};
+      const pack = await contextEngine.assembleContextPack(
+        personId,
+        actor_id,
+        interaction_context || {
+          current_surface: "day",
+          current_route: "/person/day",
+          current_component: "PersonDayView",
+          current_modality: "voice",
+          current_language: "as",
+          current_session: `sess_${Date.now()}`,
+        },
+        {
+          queryText: query_text,
+          queryShape: query_shape,
+          maxTokenBudget: max_token_budget || 800,
+        }
+      );
+      res.json(pack);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2. Governed Orchestrator Turn (10-Step Lifecycle: Intent -> Retrieval Plan -> Fusion -> Grounding -> Execution)
+  app.post("/v1/persons/:personId/intelligence/orchestrator/turn", async (req: Request, res: Response) => {
+    try {
+      const personId = req.params.personId;
+      const {
+        actor_id = "actor:purnima",
+        query = "",
+        interaction_context,
+        max_token_budget,
+      } = req.body || {};
+
+      const defaultCtx: InteractionContext = {
+        current_surface: "day",
+        current_route: "/person/day",
+        current_component: "PersonDayView",
+        current_modality: "voice",
+        current_language: "as",
+        current_session: `sess_${Date.now()}`,
+      };
+
+      const result = await governedOrchestrator.executeTurn(
+        personId,
+        actor_id,
+        query,
+        interaction_context || defaultCtx,
+        { maxTokenBudget: max_token_budget || 800 }
+      );
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3. Query-Shaped Hybrid Retrieval (Graph, Temporal, Semantic, Lexical, Media, Structured)
+  app.post("/v1/persons/:personId/intelligence/retrieval/query", async (req: Request, res: Response) => {
+    try {
+      const personId = req.params.personId;
+      const { actor_id = "actor:purnima", query = "", query_shape, interaction_context, max_items } = req.body || {};
+      const pack = await hybridRetriever.retrieve(personId, actor_id, query, {
+        queryShape: query_shape,
+        interactionContext: interaction_context,
+        maxEvidenceItems: max_items || 8,
+      });
+      res.json(pack);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 4. Governed Bounded Tools Execution with Memory Firewall & Audit Enforcement
+  app.post("/v1/persons/:personId/intelligence/tools/execute", async (req: Request, res: Response) => {
+    try {
+      const personId = req.params.personId;
+      const { tool_name, actor_id = "actor:purnima", actor_role = "person", purpose = "personalisation", args = {} } = req.body || {};
+
+      const sec = {
+        person_id: personId,
+        actor_id,
+        actor_role,
+        purpose,
+      };
+
+      let result: any;
+      switch (tool_name) {
+        case "get_current_context":
+          result = await governedToolSet.get_current_context(sec, args.interaction_context);
+          break;
+        case "search_person_graph":
+          result = await governedToolSet.search_person_graph(sec, args.query || "");
+          break;
+        case "search_personal_memories":
+          result = await governedToolSet.search_personal_memories(sec, args.query || "", args.category);
+          break;
+        case "search_temporal_events":
+          result = await governedToolSet.search_temporal_events(sec, args.time_horizon || "all");
+          break;
+        case "search_activity_history":
+          result = await governedToolSet.search_activity_history(sec, args.limit || 5);
+          break;
+        case "get_current_activity":
+          result = await governedToolSet.get_current_activity(sec, args.activity_slug || "flower_garland");
+          break;
+        case "get_person_capabilities":
+          result = await governedToolSet.get_person_capabilities(sec);
+          break;
+        case "get_person_preferences":
+          result = await governedToolSet.get_person_preferences(sec);
+          break;
+        case "get_assistance_policies":
+          result = await governedToolSet.get_assistance_policies(sec, args.task_domain);
+          break;
+        case "get_routines":
+          result = await governedToolSet.get_routines(sec);
+          break;
+        case "get_reminders":
+          result = await governedToolSet.get_reminders(sec);
+          break;
+        case "search_media":
+          result = await governedToolSet.search_media(sec, args.query || "");
+          break;
+        default:
+          return res.status(400).json({ error: `Unknown tool: ${tool_name}` });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 5. Context Compression (Raw Turns -> Structured Session Memory)
+  app.post("/v1/persons/:personId/intelligence/compress-session", async (req: Request, res: Response) => {
+    try {
+      const personId = req.params.personId;
+      const { session_id = `sess_${Date.now()}`, turns = [] } = req.body || {};
+      const compressed = contextCompressor.compress(personId, session_id, turns);
+      res.json(compressed);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 6. Automated Phase 2 Test Suite Runner (Verifies Context Hierarchy, Hybrid Retrieval, Grounding & Orchestration)
+  app.post("/v1/intelligence/phase2-test-suite/run", async (req: Request, res: Response) => {
+    try {
+      const personId = req.body?.person_id || "person:purnima_sharma";
+      const report = await phase2TestSuite.runAllTests(personId);
+      res.json(report);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 3 GOVERNED CONVERSATIONAL ASSISTANT ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 1. Conversation Gateway Assistant Turn (Full Phase 3 pipeline)
+  app.post("/v1/persons/:personId/assistant/turn", async (req: Request, res: Response) => {
+    try {
+      const personId = req.params.personId;
+      const { utterance, session_id, actor_id, actor_role, ui_context, max_token_budget } = req.body || {};
+      const result = await conversationGateway.processTurn({
+        person_id: personId,
+        utterance,
+        session_id,
+        actor_id,
+        actor_role,
+        ui_context,
+        max_token_budget,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2. Active Session Goals Query
+  app.get("/v1/persons/:personId/assistant/goals/:sessionId", (req: Request, res: Response) => {
+    try {
+      const goals = experienceLearningEngine.getActiveGoals(req.params.sessionId);
+      res.json({ session_id: req.params.sessionId, goals });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3. Typed Action Execution with Consent & Audit
+  app.post("/v1/persons/:personId/assistant/action/execute", async (req: Request, res: Response) => {
+    try {
+      const personId = req.params.personId;
+      const { action_type, params, actor_id, actor_role, purpose } = req.body || {};
+      const result = await actionExecutor.executeAction(
+        personId,
+        action_type,
+        params,
+        actor_id,
+        actor_role,
+        purpose
+      );
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 4. Automated Phase 3 Verification Test Suite Runner
+  app.post("/v1/intelligence/phase3-test-suite/run", async (req: Request, res: Response) => {
+    try {
+      const personId = req.body?.person_id || "person:purnima";
+      const report = await phase3TestSuite.runAllTests(personId);
+      res.json(report);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Seed Substrate at Startup
+  try {
+    await seedSubstrateData(substrateRepo);
+  } catch (seedErr) {
+    console.warn("Substrate seed warning:", seedErr);
+  }
 
   // ── Vite Middleware (Dev) / Static Serve (Prod) ───────────────────────────
   if (process.env.NODE_ENV !== "production") {

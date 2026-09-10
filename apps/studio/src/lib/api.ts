@@ -72,6 +72,18 @@ export type CompanionTurn = {
   voice_meta?: CompanionVoiceMeta;
   crisis_number?: string | null;
   obligations?: string[];
+  multimodal?: any;
+  goals?: any[];
+  next_best_assistance?: string;
+  experience_evidence?: any;
+  memory_proposal?: any;
+  orchestration?: {
+    id: string;
+    plan: any;
+    grounding: any;
+    lanes: string[];
+    tokens_budget: number;
+  };
 };
 
 export type VoiceCapability = {
@@ -240,6 +252,108 @@ export const api = {
       category,
       purpose,
     }),
+
+  // Phase 2 Intelligence Engine & Governed Orchestrator API
+  getIntelligenceContextPack: (
+    personId: string,
+    params: {
+      actor_id?: string;
+      interaction_context?: any;
+      query_text?: string;
+      query_shape?: string;
+      max_token_budget?: number;
+    } = {}
+  ) =>
+    post<any>(`/v1/persons/${personId}/intelligence/context-pack`, params),
+
+  executeOrchestratorTurn: (
+    personId: string,
+    query: string,
+    interaction_context?: any,
+    options?: { actor_id?: string; max_token_budget?: number }
+  ) =>
+    post<any>(`/v1/persons/${personId}/intelligence/orchestrator/turn`, {
+      query,
+      interaction_context,
+      actor_id: options?.actor_id || "actor:purnima",
+      max_token_budget: options?.max_token_budget || 800,
+    }),
+
+  executeHybridRetrieval: (
+    personId: string,
+    query: string,
+    query_shape?: string,
+    interaction_context?: any
+  ) =>
+    post<any>(`/v1/persons/${personId}/intelligence/retrieval/query`, {
+      query,
+      query_shape,
+      interaction_context,
+    }),
+
+  executeGovernedTool: (
+    personId: string,
+    tool_name: string,
+    args: any = {},
+    sec?: { actor_id?: string; actor_role?: string; purpose?: string }
+  ) =>
+    post<any>(`/v1/persons/${personId}/intelligence/tools/execute`, {
+      tool_name,
+      args,
+      actor_id: sec?.actor_id || "actor:purnima",
+      actor_role: sec?.actor_role || "person",
+      purpose: sec?.purpose || "personalisation",
+    }),
+
+  compressSession: (personId: string, sessionId: string, turns: any[]) =>
+    post<any>(`/v1/persons/${personId}/intelligence/compress-session`, {
+      session_id: sessionId,
+      turns,
+    }),
+
+  runPhase2TestSuite: (personId = "person:purnima_sharma") =>
+    post<any>("/v1/intelligence/phase2-test-suite/run", { person_id: personId }),
+
+  // Phase 3 Conversational Assistant API
+  executeAssistantTurn: (
+    personId: string,
+    utterance: string,
+    options?: {
+      session_id?: string;
+      actor_id?: string;
+      actor_role?: string;
+      ui_context?: any;
+      max_token_budget?: number;
+    }
+  ) =>
+    post<any>(`/v1/persons/${personId}/assistant/turn`, {
+      utterance,
+      session_id: options?.session_id,
+      actor_id: options?.actor_id,
+      actor_role: options?.actor_role,
+      ui_context: options?.ui_context,
+      max_token_budget: options?.max_token_budget,
+    }),
+
+  getActiveGoals: (personId: string, sessionId: string) =>
+    get<any>(`/v1/persons/${personId}/assistant/goals/${sessionId}`),
+
+  executeTypedAction: (
+    personId: string,
+    actionType: string,
+    params: any,
+    sec?: { actor_id?: string; actor_role?: string; purpose?: string }
+  ) =>
+    post<any>(`/v1/persons/${personId}/assistant/action/execute`, {
+      action_type: actionType,
+      params,
+      actor_id: sec?.actor_id,
+      actor_role: sec?.actor_role,
+      purpose: sec?.purpose,
+    }),
+
+  runPhase3TestSuite: (personId = "person:purnima") =>
+    post<any>("/v1/intelligence/phase3-test-suite/run", { person_id: personId }),
 
   health: () => get<{ status: string; app: string; env: string }>("/health"),
 };

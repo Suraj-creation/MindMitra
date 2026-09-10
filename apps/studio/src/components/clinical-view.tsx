@@ -112,29 +112,30 @@ export function ClinicalView() {
             {DOMAIN_DATA.map((domain) => {
               const isAlert = domain.status === "alert";
               return (
-                <Card
-                  key={domain.name}
-                  className={`p-4 border ${
-                    isAlert ? "border-amber-300 bg-amber-50/40" : "border-[--color-border] bg-white"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-[--color-text-sub]">{domain.name}</span>
-                    <Badge variant={isAlert ? "warning" : "success"}>
-                      {isAlert ? "Alert (z < -1.5)" : "Within Median"}
-                    </Badge>
-                  </div>
-                  <div className="mt-3 flex items-baseline gap-2">
-                    <span className="text-3xl font-bold font-mono text-[--color-text]">
-                      {domain.z.toFixed(2)}
-                    </span>
-                    <span className="text-xs text-[--color-muted]">z-score</span>
-                  </div>
-                  <div className="mt-2 text-xs text-[--color-text-sub] space-y-0.5">
-                    <div>14-day Median: <strong>{domain.median}</strong> (MAD: {domain.mad})</div>
-                    <div className="text-[11px] font-medium text-amber-800">{domain.trend}</div>
-                  </div>
-                </Card>
+                <div key={domain.name}>
+                  <Card
+                    className={`p-4 border ${
+                      isAlert ? "border-amber-300 bg-amber-50/40" : "border-[--color-border] bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-[--color-text-sub]">{domain.name}</span>
+                      <Badge variant={isAlert ? "warning" : "success"}>
+                        {isAlert ? "Alert (z < -1.5)" : "Within Median"}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 flex items-baseline gap-2">
+                      <span className="text-3xl font-bold font-mono text-[--color-text]">
+                        {domain.z.toFixed(2)}
+                      </span>
+                      <span className="text-xs text-[--color-muted]">z-score</span>
+                    </div>
+                    <div className="mt-2 text-xs text-[--color-text-sub] space-y-0.5">
+                      <div>14-day Median: <strong>{domain.median}</strong> (MAD: {domain.mad})</div>
+                      <div className="text-[11px] font-medium text-amber-800">{domain.trend}</div>
+                    </div>
+                  </Card>
+                </div>
               );
             })}
           </div>

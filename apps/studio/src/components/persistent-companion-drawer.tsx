@@ -1,8 +1,12 @@
 "use client";
 
 import {
+  Bookmark,
+  Calendar,
+  CheckCircle2,
   Flower,
   HeartHandshake,
+  Image as ImageIcon,
   LoaderCircle,
   MessageCircle,
   Mic,
@@ -12,6 +16,8 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  Target,
+  User,
   Volume2,
   VolumeX,
   X,
@@ -33,6 +39,9 @@ type MessageItem = {
   action?: CompanionAction | null;
   sources?: Array<{ fact_id: string; source_type: string; verified: boolean; text: string }>;
   voice_meta?: CompanionVoiceMeta | null;
+  multimodal?: any | null;
+  goals?: any[];
+  next_best_assistance?: string | null;
 };
 
 type PersistentCompanionDrawerProps = {
@@ -78,6 +87,7 @@ export function PersistentCompanionDrawer({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState("");
   const [teleManasNumber, setTeleManasNumber] = useState<string | null>(null);
+  const [activeGoals, setActiveGoals] = useState<any[]>([]);
 
   const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -94,23 +104,23 @@ export function PersistentCompanionDrawer({
     switch (currentSection) {
       case "life":
         return [
+          "Show me Rina",
+          "Show me my wedding",
           "Tell me about the Bihu festival photo",
           "Play the morning bamboo flute raga",
-          "Tell me about the nahor tree in the courtyard",
-          "Show me my loved ones",
         ];
       case "activity":
         return [
           "Help me weave a flower garland",
           "What goes into afternoon cardamom tea?",
           "Can we do a slow courtyard breath?",
-          "Tell me about the flowers in Tezpur",
+          "I want to stop and rest",
         ];
       case "people":
         return [
-          "Tell me about granddaughter Rina",
-          "Can we call daughter Anu?",
-          "Where does my son Bikash live?",
+          "Show me Rina",
+          "Call daughter Anu",
+          "Tell me about Bikash in Bengaluru",
           "Who is Meena the health worker?",
         ];
       case "help":
@@ -123,10 +133,10 @@ export function PersistentCompanionDrawer({
       case "day":
       default:
         return [
-          "What is happening today?",
-          "When is granddaughter Rina calling?",
-          "What time is our cardamom tea?",
-          "Let's listen to gentle music",
+          "Show me what I need to do today",
+          "Show me what I did yesterday",
+          "Show me Rina",
+          "Play bamboo flute music",
         ];
     }
   };
@@ -250,7 +260,14 @@ export function PersistentCompanionDrawer({
         action: turn.action,
         sources: turn.sources,
         voice_meta: turn.voice_meta || null,
+        multimodal: turn.multimodal || null,
+        goals: turn.goals || [],
+        next_best_assistance: turn.next_best_assistance || null,
       };
+
+      if (Array.isArray(turn.goals) && turn.goals.length > 0) {
+        setActiveGoals(turn.goals);
+      }
 
       setMessages((prev) => [...prev, assistantMessage]);
 
@@ -275,17 +292,25 @@ export function PersistentCompanionDrawer({
   };
 
   const handleActionClick = (action: CompanionAction) => {
-    if (action.type === "navigate" && action.target) {
+    const actType = String(action.type || "");
+    if ((actType === "navigate" || actType === "navigate_to") && action.target) {
       onNavigate(action.target as any);
       onToggle(false);
-    } else if (action.type === "call_contact" && action.target) {
-      const phone = action.phone || (action.target === "Rina" ? "+91 94350 98765" : "+91 98640 12345");
-      onQuickCall(action.target, phone);
-    } else if (action.type === "start_activity") {
+    } else if (actType === "call_contact" || actType === "call_person") {
+      const targetName = action.target || (action.payload?.name) || "Contact";
+      const phone = action.phone || action.payload?.phone || (targetName.includes("Rina") ? "+91 94350 98765" : "+91 98640 12345");
+      onQuickCall(targetName, phone);
+    } else if (actType === "start_activity" || actType === "resume_activity") {
       onNavigate("activity");
       onToggle(false);
-    } else if (action.type === "show_media" || action.type === "play_music") {
+    } else if (actType === "show_media" || actType === "play_music" || actType === "show_photo" || actType === "show_memory") {
       onNavigate("life");
+      onToggle(false);
+    } else if (actType === "show_person") {
+      onNavigate("people");
+      onToggle(false);
+    } else if (actType === "show_routine" || actType === "show_timeline") {
+      onNavigate("day");
       onToggle(false);
     }
   };
@@ -404,6 +429,24 @@ export function PersistentCompanionDrawer({
 
           {/* Conversation History Area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {/* Active Goals Ribbon */}
+            {activeGoals.filter((g) => g.status === "active").length > 0 && (
+              <div className="p-3 bg-[#5e6f4a]/10 border border-[#5e6f4a]/20 rounded-xl flex items-center justify-between text-xs text-[#5e6f4a]">
+                <div className="flex items-center gap-2">
+                  <Target size={16} className="text-[#5e6f4a] shrink-0" />
+                  <div>
+                    <span className="font-bold">Active Focus: </span>
+                    <span className="font-medium text-[#332f29]">
+                      {activeGoals.find((g) => g.status === "active")?.title}
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-[#5e6f4a] text-white rounded-full">
+                  Governed
+                </span>
+              </div>
+            )}
+
             {messages.map((item) => (
               <div
                 key={item.id}
@@ -429,11 +472,197 @@ export function PersistentCompanionDrawer({
                         <Volume2 size={16} />
                         <span>Listen again</span>
                       </button>
+                      {item.next_best_assistance && (
+                        <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 bg-[#eee1cc] text-[#5e6f4a] rounded">
+                          {item.next_best_assistance}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
 
-                {/* Optional Connected Action Card */}
+                {/* Multimodal Card Renders */}
+                {item.multimodal?.person_card && (
+                  <div className="mt-2.5 max-w-[85%] sm:max-w-[80%] bg-white rounded-2xl p-4 border-2 border-[#d8b878] shadow-md space-y-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-11 h-11 rounded-full bg-[#eee1cc] text-[#5e6f4a] flex items-center justify-center font-bold text-lg border border-[#d8b878]">
+                        <User size={22} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-bold text-base text-[#332f29] truncate">
+                          {item.multimodal.person_card.display_name}
+                        </h4>
+                        <p className="text-xs font-semibold text-[#5e6f4a]">
+                          {item.multimodal.person_card.relationship}
+                        </p>
+                      </div>
+                    </div>
+                    {item.multimodal.person_card.notes && (
+                      <p className="text-xs text-[#6b6255] italic bg-[#fbf7f0] p-2 rounded-lg">
+                        {item.multimodal.person_card.notes}
+                      </p>
+                    )}
+                    <div className="pt-1 flex items-center gap-2">
+                      {item.multimodal.person_card.phone && (
+                        <button
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-[#5e6f4a] hover:bg-[#4d5c3c] text-white rounded-xl text-xs font-bold shadow-sm"
+                          onClick={() => onQuickCall(item.multimodal.person_card.display_name, item.multimodal.person_card.phone)}
+                          type="button"
+                        >
+                          <PhoneCall size={14} /> Call ({item.multimodal.person_card.phone})
+                        </button>
+                      )}
+                      <button
+                        className="inline-flex items-center justify-center px-3 py-2 bg-[#eee1cc] hover:bg-[#d8b878]/60 text-[#332f29] rounded-xl text-xs font-bold"
+                        onClick={() => { onNavigate("people"); onToggle(false); }}
+                        type="button"
+                      >
+                        View Loved People
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {item.multimodal?.photo_card && (
+                  <div className="mt-2.5 max-w-[85%] sm:max-w-[80%] bg-white rounded-2xl p-4 border border-[#e6ddcf] shadow-md space-y-2">
+                    <div className="flex items-center gap-2 text-[#5e6f4a] text-xs font-bold uppercase tracking-wider">
+                      <ImageIcon size={16} />
+                      <span>Family Photograph</span>
+                      {item.multimodal.photo_card.year && (
+                        <span className="ml-auto px-2 py-0.5 bg-[#eee1cc] text-[#332f29] rounded text-[11px]">
+                          {item.multimodal.photo_card.year}
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-base text-[#332f29]">
+                      {item.multimodal.photo_card.title}
+                    </h4>
+                    <p className="text-sm text-[#4a4237] leading-relaxed">
+                      {item.multimodal.photo_card.caption}
+                    </p>
+                    {item.multimodal.photo_card.place && (
+                      <p className="text-xs text-[#8e8579] font-medium">
+                        📍 {item.multimodal.photo_card.place}
+                      </p>
+                    )}
+                    {Array.isArray(item.multimodal.photo_card.people) && (
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {item.multimodal.photo_card.people.map((p: string, idx: number) => (
+                          <span key={idx} className="text-[11px] px-2 py-0.5 bg-[#fbf7f0] border border-[#e6ddcf] rounded-full text-[#5e6f4a] font-medium">
+                            {p}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {item.multimodal?.memory_card && (
+                  <div className="mt-2.5 max-w-[85%] sm:max-w-[80%] bg-[#fbf7f0] rounded-2xl p-4 border border-[#d8b878] shadow-sm space-y-2">
+                    <div className="flex items-center justify-between text-xs text-[#5e6f4a] font-bold">
+                      <span className="flex items-center gap-1.5">
+                        <Bookmark size={15} /> Cherished Life Memory
+                      </span>
+                      {item.multimodal.memory_card.verified && (
+                        <span className="flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full font-semibold">
+                          <CheckCircle2 size={12} /> Grounded
+                        </span>
+                      )}
+                    </div>
+                    <h4 className="font-bold text-base text-[#332f29]">
+                      {item.multimodal.memory_card.title}
+                    </h4>
+                    <p className="text-sm text-[#4a4237] leading-relaxed">
+                      {item.multimodal.memory_card.detail}
+                    </p>
+                  </div>
+                )}
+
+                {item.multimodal?.music_card && (
+                  <div className="mt-2.5 max-w-[85%] sm:max-w-[80%] bg-emerald-50 rounded-2xl p-4 border border-emerald-200 shadow-sm flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-emerald-200 text-emerald-800 flex items-center justify-center">
+                        <Music size={20} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-sm text-emerald-950">
+                          {item.multimodal.music_card.title}
+                        </h4>
+                        <p className="text-xs text-emerald-700 font-medium">
+                          {item.multimodal.music_card.genre}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      className="px-3 py-1.5 bg-[#5e6f4a] text-white text-xs font-bold rounded-lg shadow hover:bg-[#4d5c3c]"
+                      onClick={() => { onNavigate("life"); onToggle(false); }}
+                      type="button"
+                    >
+                      Listen
+                    </button>
+                  </div>
+                )}
+
+                {item.multimodal?.activity_card && (
+                  <div className="mt-2.5 max-w-[85%] sm:max-w-[80%] bg-amber-50 rounded-2xl p-4 border border-amber-200 shadow-sm space-y-2">
+                    <div className="flex items-center justify-between text-xs text-amber-900 font-bold">
+                      <span className="flex items-center gap-1.5">
+                        <Flower size={15} /> Guided Activity Step
+                      </span>
+                      <span className="px-2 py-0.5 bg-amber-200 text-amber-900 rounded-full text-[11px]">
+                        Step {item.multimodal.activity_card.step_number} of {item.multimodal.activity_card.total_steps}
+                      </span>
+                    </div>
+                    <h4 className="font-bold text-base text-amber-950">
+                      {item.multimodal.activity_card.title}
+                    </h4>
+                    <p className="text-sm text-amber-900 leading-relaxed font-medium">
+                      {item.multimodal.activity_card.current_step}
+                    </p>
+                    {item.multimodal.activity_card.assistance_hint && (
+                      <p className="text-xs text-amber-800 italic bg-amber-100/70 p-2 rounded-lg">
+                        💡 {item.multimodal.activity_card.assistance_hint}
+                      </p>
+                    )}
+                    <button
+                      className="w-full mt-1 py-2 bg-[#5e6f4a] hover:bg-[#4d5c3c] text-white text-xs font-bold rounded-xl shadow"
+                      onClick={() => { onNavigate("activity"); onToggle(false); }}
+                      type="button"
+                    >
+                      Continue in Activities View
+                    </button>
+                  </div>
+                )}
+
+                {item.multimodal?.routine_card && (
+                  <div className="mt-2.5 max-w-[85%] sm:max-w-[80%] bg-white rounded-2xl p-4 border border-[#e6ddcf] shadow-sm space-y-2">
+                    <div className="flex items-center justify-between text-xs text-[#5e6f4a] font-bold">
+                      <span className="flex items-center gap-1.5">
+                        <Calendar size={15} /> Daily Schedule
+                      </span>
+                      <span className="text-[11px] text-[#6b6255]">
+                        {item.multimodal.routine_card.date_label}
+                      </span>
+                    </div>
+                    <div className="space-y-1.5 pt-1">
+                      {item.multimodal.routine_card.scheduled_items.map((it: any, idx: number) => (
+                        <div key={idx} className="flex items-center gap-2 text-xs p-2 rounded-lg bg-[#fbf7f0] border border-[#e6ddcf]/70">
+                          {it.completed ? (
+                            <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                          ) : (
+                            <div className="w-4 h-4 rounded-full border-2 border-[#5e6f4a] shrink-0" />
+                          )}
+                          <span className="font-bold text-[#5e6f4a]">{it.time}</span>
+                          <span className={`flex-1 ${it.completed ? "line-through text-[#8e8579]" : "font-medium text-[#332f29]"}`}>
+                            {it.label}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Connected Action Button if action exists */}
                 {item.action && (
                   <div className="mt-2 ml-1">
                     <button
@@ -441,10 +670,10 @@ export function PersistentCompanionDrawer({
                       onClick={() => handleActionClick(item.action!)}
                       type="button"
                     >
-                      {item.action.type === "call_contact" && <PhoneCall size={18} className="text-[#5e6f4a]" />}
-                      {item.action.type === "start_activity" && <Flower size={18} className="text-[#5e6f4a]" />}
-                      {item.action.type === "play_music" && <Music size={18} className="text-[#5e6f4a]" />}
-                      {item.action.type === "navigate" && <Sparkles size={18} className="text-[#5e6f4a]" />}
+                      {(item.action.type === "call_contact" || item.action.type === ("call_person" as any)) && <PhoneCall size={18} className="text-[#5e6f4a]" />}
+                      {(item.action.type === "start_activity" || item.action.type === ("resume_activity" as any)) && <Flower size={18} className="text-[#5e6f4a]" />}
+                      {(item.action.type === "play_music") && <Music size={18} className="text-[#5e6f4a]" />}
+                      {(item.action.type === "navigate" || item.action.type === ("navigate_to" as any) || item.action.type === ("show_person" as any)) && <Sparkles size={18} className="text-[#5e6f4a]" />}
                       <span>{item.action.label}</span>
                     </button>
                   </div>

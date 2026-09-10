@@ -8,7 +8,8 @@ import MQDemoPage from "@/demo/mq/page";
 import SafetyDemoPage from "@/demo/safety/page";
 import { AshaView } from "@/components/asha-view";
 import { ClinicalView } from "@/components/clinical-view";
-import { ArrowLeft, Heart, Shield, User } from "lucide-react";
+import { SubstrateView } from "@/components/substrate-view";
+import { ArrowLeft, Heart, Shield, User, Database } from "lucide-react";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>("person");
@@ -49,6 +50,7 @@ export default function App() {
           <PersonApp />
         ) : (
           <main className="mx-auto max-w-6xl px-4 py-8">
+            {activeTab === "substrate" && <SubstrateView />}
             {activeTab === "caregiver" && <CaregiverDemoPage />}
             {activeTab === "asha" && <AshaView />}
             {activeTab === "clinical" && <ClinicalView />}
@@ -84,6 +86,18 @@ export default function App() {
               }`}
             >
               👤 Person App
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("substrate")}
+              className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                activeTab === "substrate"
+                  ? "bg-[#425232] text-white shadow-sm"
+                  : "bg-[#eee1cc] text-[#332f29] hover:bg-[#d8b878]/50"
+              }`}
+            >
+              🗄️ Intelligence Substrate
             </button>
 
             <button

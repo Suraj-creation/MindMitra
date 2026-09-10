@@ -1,9 +1,10 @@
 import type React from "react";
 import { cn } from "@/lib/utils";
-import { ShieldCheck, UserCheck, HeartHandshake, Stethoscope, Sliders, Lock, AlertTriangle, Home } from "lucide-react";
+import { ShieldCheck, UserCheck, HeartHandshake, Stethoscope, Sliders, Lock, AlertTriangle, Home, Database } from "lucide-react";
 
 export type NavTab =
   | "person"
+  | "substrate"
   | "caregiver"
   | "asha"
   | "clinical"
@@ -14,6 +15,7 @@ export type NavTab =
 
 const navItems: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }> = [
   { id: "person", label: "Person (Purnima)", icon: Home },
+  { id: "substrate", label: "Intelligence Substrate", icon: Database },
   { id: "caregiver", label: "Caregiver (Anu)", icon: UserCheck },
   { id: "asha", label: "ASHA / CHW", icon: HeartHandshake },
   { id: "clinical", label: "Clinical Bridge", icon: Stethoscope },

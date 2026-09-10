@@ -4,15 +4,19 @@ import { cn } from "@/lib/utils";
 export function Card({
   className,
   children,
-  key,
-}: {
-  className?: string;
-  children: React.ReactNode;
-  key?: React.Key;
-}) {
+  id,
+  role,
+  tabIndex,
+  onClick,
+  style,
+}: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      key={key}
+      id={id}
+      role={role}
+      tabIndex={tabIndex}
+      onClick={onClick}
+      style={style}
       className={cn(
         "rounded-xl border border-[--color-border] bg-white p-6 shadow-sm",
         className,
@@ -26,12 +30,11 @@ export function Card({
 export function CardTitle({
   children,
   className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
+  id,
+  style,
+}: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
-    <h2 className={cn("text-lg font-semibold text-[--color-text] mb-1", className)}>
+    <h2 id={id} style={style} className={cn("text-lg font-semibold text-[--color-text] mb-1", className)}>
       {children}
     </h2>
   );
@@ -39,8 +42,13 @@ export function CardTitle({
 
 export function CardDescription({
   children,
-}: {
-  children: React.ReactNode;
-}) {
-  return <p className="text-sm text-[--color-muted] mb-4">{children}</p>;
+  className,
+  id,
+  style,
+}: React.HTMLAttributes<HTMLParagraphElement>) {
+  return (
+    <p id={id} style={style} className={cn("text-sm text-[--color-muted] mb-4", className)}>
+      {children}
+    </p>
+  );
 }
