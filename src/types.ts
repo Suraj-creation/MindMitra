@@ -115,3 +115,5 @@ export interface GeneratedAsset {
   prompt: string;
   createdAt: string;
 }
+
+export * from "./domain/cognitive-experience";

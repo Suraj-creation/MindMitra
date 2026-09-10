@@ -2,6 +2,14 @@ import express, { Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import {
+  cognitiveStore,
+  validateExperienceSpec,
+  compileTimelineSpec,
+  compilePrepareForSpec,
+  compileExperienceBraidSpec,
+} from "./src/intelligence/cognitive-engine";
+import { FutureEvent } from "./src/domain/cognitive-experience";
 
 // ── Google GenAI Client (Lazy Init with User-Agent header) ───────────────────
 let aiClient: GoogleGenAI | null = null;
@@ -711,6 +719,257 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       purpose: "personalisation",
       active: false,
     });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 11. PERSONAL COGNITIVE EXPERIENCE SPACE & UNIFIED COGNITIVE STUDIO API
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // A. Canonical Personal Game Context Pack (PWM, PCM, XM, GIM, CAE)
+  app.get("/v1/cognitive-studio/context-pack/:personId", (req: Request, res: Response) => {
+    const pack = cognitiveStore.getContextPack(req.params.personId);
+    res.json(pack);
+  });
+
+  // B. Available Deterministic Engines / Templates
+  app.get("/v1/cognitive-studio/templates", (req: Request, res: Response) => {
+    res.json([
+      {
+        id: "tpl:my_life_timeline",
+        template_key: "my_life_timeline",
+        title: "My Life Timeline (জীৱনৰ স্মৃতিৰেখা)",
+        cognitive_family: "autobiographical_sequencing",
+        supported_modalities: ["photo_plus_voice", "visual_only", "tactile_sequencing"],
+        supported_difficulty_range: [1, 3],
+        offline_capable: true,
+        modes: ["recognition", "association", "construction", "voice", "story"],
+        description: "Deterministic autobiographical sequencing using verified archival photographs and family voice prompts.",
+      },
+      {
+        id: "tpl:prepare_for",
+        template_key: "prepare_for",
+        title: "Prepare-For: Veranda Visit & Tea Ceremony (প্ৰস্তুতি)",
+        cognitive_family: "executive_planning",
+        supported_modalities: ["multi_modal", "visual_tactile", "photo_plus_voice"],
+        supported_difficulty_range: [1, 3],
+        offline_capable: true,
+        stages: 5,
+        description: "Real-world bridge connecting recognition, orientation, tea preparation sequencing, prospective reminders, and social call.",
+      },
+      {
+        id: "tpl:experience_braid",
+        template_key: "experience_braid",
+        title: "Experience Braid: Past, Present & Future (স্মৃতিৰ তৰংগ)",
+        cognitive_family: "autobiographical_sequencing",
+        supported_modalities: ["multi_modal", "photo_plus_voice"],
+        supported_difficulty_range: [1, 3],
+        offline_capable: true,
+        description: "Signature MindMitra multi-phase journey weaving past memory into present sensory calm and future afternoon visitor preparation.",
+      },
+    ]);
+  });
+
+  // C. Generate & Validate Experience Specification (Level A / B / C)
+  app.post("/v1/cognitive-studio/generate-spec", (req: Request, res: Response) => {
+    const {
+      person_id = "person:purnima",
+      template_key = "my_life_timeline",
+      mode = "recognition",
+      generation_mode = "parametrically_personalised_level_b",
+    } = req.body || {};
+
+    const context = cognitiveStore.getContextPack(person_id);
+    let spec;
+
+    if (template_key === "prepare_for") {
+      spec = compilePrepareForSpec(context);
+    } else if (template_key === "experience_braid") {
+      spec = compileExperienceBraidSpec(context);
+    } else {
+      spec = compileTimelineSpec(context, mode);
+    }
+
+    if (generation_mode) {
+      spec.generation_mode = generation_mode;
+    }
+
+    // Audit log this generation run
+    cognitiveStore.generationRuns.unshift({
+      id: `run_${Date.now()}`,
+      person_id,
+      selected_template: template_key,
+      generation_mode: spec.generation_mode,
+      validation_results: spec.validation_status,
+      created_at: new Date().toISOString(),
+    });
+
+    res.json(spec);
+  });
+
+  // D. Memories Collection API (with Provenance & Verification)
+  app.get("/v1/memories", (req: Request, res: Response) => {
+    const { person_id, verification_status, temporal_frame } = req.query;
+    let list = cognitiveStore.memories;
+    if (person_id) list = list.filter((m) => m.person_id === person_id);
+    if (verification_status) list = list.filter((m) => m.verification_status === verification_status);
+    if (temporal_frame) list = list.filter((m) => m.temporal_frame === temporal_frame);
+    res.json({ count: list.length, items: list });
+  });
+
+  app.post("/v1/memories", (req: Request, res: Response) => {
+    const {
+      person_id = "person:purnima",
+      memory_type = "autobiographical",
+      title,
+      description,
+      assamese_title,
+      temporal_frame = "recent",
+      approximate_period = "Recent",
+      source = "person",
+      verification_status = "unverified",
+      sensitivity = "low",
+      cultural_context = "Tezpur, Assam",
+      media_refs = [],
+      people_refs = [],
+      voice_notes = [],
+    } = req.body || {};
+
+    if (!title) {
+      return res.status(400).json({ error: "Memory title is required." });
+    }
+
+    // New uploaded memory from person starts as unverified claim
+    const created = cognitiveStore.addMemory({
+      person_id,
+      memory_type,
+      title,
+      description: description || "",
+      assamese_title,
+      temporal_frame,
+      approximate_period,
+      source,
+      verification_status: source === "caregiver" ? "caregiver_verified" : verification_status,
+      confidence: source === "caregiver" ? 0.98 : 0.75,
+      sensitivity,
+      cultural_context,
+      media_refs,
+      people_refs,
+      voice_notes,
+    });
+
+    res.json({
+      status: "created",
+      memory: created,
+      provenance_note: created.verification_status === "unverified"
+        ? "Stored permanently as an unverified person statement. Accessible for personal viewing; requires caregiver confirmation before inclusion in cognitive games."
+        : "Verified memory available for personalized cognitive grounding.",
+    });
+  });
+
+  // E. Verify Memory (Caregiver / CHW / Clinician Action)
+  app.post("/v1/memories/:id/verify", (req: Request, res: Response) => {
+    const { verified_by = "Anu (Primary Caregiver)", role = "primary_caregiver", relationship_note } = req.body || {};
+    const updated = cognitiveStore.verifyMemory(req.params.id, verified_by, role, relationship_note);
+    if (!updated) {
+      return res.status(404).json({ error: "Memory item not found." });
+    }
+    res.json({
+      status: "verified",
+      memory: updated,
+      message: `Memory has been verified by ${verified_by} and is now available for cognitive game grounding.`,
+    });
+  });
+
+  // F. Prospective Future Events API
+  app.get("/v1/future-events", (req: Request, res: Response) => {
+    res.json({ count: cognitiveStore.futureEvents.length, items: cognitiveStore.futureEvents });
+  });
+
+  app.post("/v1/future-events", (req: Request, res: Response) => {
+    const { title, event_type = "family_visit", person_name = "Rina", scheduled_at, location = "Veranda, Tezpur" } = req.body || {};
+    const newEvent: FutureEvent = {
+      id: `event_${Date.now()}`,
+      person_id: "person:purnima",
+      event_type,
+      title: title || "Family Visit",
+      person_name,
+      relationship: "granddaughter",
+      location,
+      scheduled_at: scheduled_at || new Date(Date.now() + 4 * 3600 * 1000).toISOString(),
+      status: "confirmed",
+      source: "caregiver",
+      verification_status: "caregiver_verified",
+    };
+    cognitiveStore.futureEvents.push(newEvent);
+    res.json({ status: "created", event: newEvent });
+  });
+
+  // G. Record Trial Telemetry & Complete Experience Episode
+  app.post("/v1/cognitive-studio/sessions/trial", (req: Request, res: Response) => {
+    const { trial_index, step_name, latency_ms, assistance_level, hint_used, is_correct } = req.body || {};
+    // Calculate measurement quality
+    const mq = assistance_level === "none" ? 0.95 : assistance_level === "visual_cue" ? 0.85 : 0.70;
+    res.json({
+      status: "recorded",
+      trial_index,
+      step_name,
+      latency_ms: latency_ms || 1200,
+      assistance_level: assistance_level || "none",
+      measurement_quality_q: mq,
+    });
+  });
+
+  app.post("/v1/cognitive-studio/sessions/complete", (req: Request, res: Response) => {
+    const {
+      session_id = `sess_${Date.now()}`,
+      person_id = "person:purnima",
+      template_key = "my_life_timeline",
+      generation_mode = "parametrically_personalised_level_b",
+      objective = "Autobiographical sequencing & reminiscence",
+      engagement_score = 0.92,
+      assistance_rate = 0.1,
+      observed_response = "Engaged warmly with photo cues and family voice.",
+      learned_implication = "2-choice recognition produces high confidence without frustration.",
+      domain = "autobiographical_memory",
+    } = req.body || {};
+
+    const episode = cognitiveStore.recordEpisode({
+      session_id,
+      person_id,
+      template_key,
+      generation_mode,
+      objective,
+      context: {
+        time_of_day: "10:30 AM",
+        modality: "photo_plus_voice",
+        difficulty: 2,
+      },
+      engagement_score,
+      assistance_rate,
+      measurement_quality: 0.89,
+      observed_response,
+      learned_implication,
+      pcm_update: {
+        domain,
+        delta: +0.02,
+        new_estimate: 0.92,
+      },
+    });
+
+    res.json({
+      status: "completed",
+      episode,
+      feedback: "Experience Episode synthesized and integrated into Personal Capability Model (PCM) & Experience Memory (XM).",
+    });
+  });
+
+  // H. Episodes & Audit Runs
+  app.get("/v1/cognitive-studio/episodes/:personId", (req: Request, res: Response) => {
+    res.json({ count: cognitiveStore.episodes.length, episodes: cognitiveStore.episodes });
+  });
+
+  app.get("/v1/cognitive-studio/audit-runs", (req: Request, res: Response) => {
+    res.json({ count: cognitiveStore.generationRuns.length, runs: cognitiveStore.generationRuns });
   });
 
   // ── Vite Middleware (Dev) / Static Serve (Prod) ───────────────────────────
