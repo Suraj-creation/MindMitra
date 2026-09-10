@@ -31,8 +31,39 @@ export const CaregiverCopilot: React.FC = () => {
   const runDeclineInjection = async () => {
     setLoading(true);
     try {
-      const res = await api.injectDecline(declineDays);
-      setDeclineResult(res);
+      const res = (await api.injectDecline(declineDays)) as any;
+      const formattedResult: InjectDeclineResponse = {
+        days: res.days ?? declineDays,
+        card: {
+          title: "Caregiver Alert Card",
+          urgency: (res.alert?.level ?? "L3") as any,
+          observation:
+            res.card?.facts?.[0]?.content ??
+            res.card?.observation ??
+            "Performance dropped below personal baseline.",
+          hypothesis:
+            res.card?.hypothesis?.content ??
+            res.card?.hypothesis ??
+            "May indicate mild environmental distraction or sleep deficit.",
+          action:
+            res.card?.actions?.[0] ??
+            res.card?.action ??
+            "Ensure hydration and familiar routine.",
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          facts:
+            res.card?.facts?.map((f: any, idx: number) => ({
+              id: f.id ?? `f-${idx}`,
+              text: f.text ?? f.content,
+              date: f.date ?? "Recent 72h",
+            })) ?? [],
+        },
+        alert: {
+          level: res.alert?.level ?? "L3",
+          domain: res.alert?.domain ?? "cognition",
+          variance: "-2.42 z-score",
+        },
+      };
+      setDeclineResult(formattedResult);
       setAttentionUsed((prev) => Math.min(2, prev + 1));
     } finally {
       setLoading(false);

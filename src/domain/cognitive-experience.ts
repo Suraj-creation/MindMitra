@@ -1,78 +1,87 @@
 export type TemporalFrame = "past" | "childhood" | "young_adulthood" | "later_life" | "recent" | "present" | "future";
-export type MemoryVerificationStatus = "unverified" | "verified" | "rejected" | "caregiver_verified" | "chw_verified" | "clinician_verified";
-export type MemorySource = "person" | "caregiver" | "chw" | "clinician" | "system" | "system_obs" | "model_inference";
+export type MemoryVerificationStatus = "unverified" | "caregiver_verified" | "chw_verified" | "clinician_verified";
+export type MemorySource = "person" | "caregiver" | "chw" | "clinician" | "system_obs" | "model_inference";
 export type ConsentScope = "person_only" | "family" | "games" | "reminiscence" | "all";
-export type FutureEventStatus = "expected" | "confirmed" | "occurred" | "cancelled";
-
-export interface PersonEntity {
-  id: string;
-  person_id: string;
-  name: string;
-  assamese_name?: string;
-  display_name: string;
-  relationship_to_person: string;
-  avatar_media_id?: string;
-  phone?: string;
-  is_emergency_contact: boolean;
-  can_verify_memories: boolean;
-  verification_status: MemoryVerificationStatus;
-  created_at: string;
-}
-
-export interface Relationship {
-  id: string;
-  person_id: string;
-  related_entity_id: string;
-  related_person_name: string;
-  relationship_type: string;
-  closeness_level: "primary_caregiver" | "family_core" | "extended" | "community_chw" | "clinical";
-  verification_status: MemoryVerificationStatus;
-  verified_by?: string;
-  notes?: string;
-  created_at: string;
-}
-
-export interface LifeEvent {
-  id: string;
-  person_id: string;
-  title: string;
-  assamese_title?: string;
-  description: string;
-  event_type: "milestone" | "career" | "family" | "education" | "cultural" | "residence";
-  era_period: string;
-  approximate_year?: number;
-  cultural_significance?: string;
-  primary_media_id?: string;
-  linked_memory_ids?: string[];
-  verification_status: MemoryVerificationStatus;
-  verified_by?: string;
-  sensitivity: "low" | "medium" | "high";
-  game_eligible: boolean;
-  created_at: string;
-}
+export type VisibilityScope = "private" | "family" | "clinical";
+export type SensitivityLevel = "low" | "medium" | "high";
 
 export interface MediaAsset {
   id: string;
   person_id: string;
-  storage_backend?: "b2" | "s3" | "local";
-  b2_bucket?: string;
-  b2_file_id?: string;
   storage_key: string;
   media_type: "photo" | "audio" | "video" | "document";
   mime_type: string;
-  file_size_bytes?: number;
-  width?: number;
-  height?: number;
-  duration_seconds?: number;
   thumbnail_url?: string;
   url: string;
   title: string;
+  source: MemorySource;
+  verification_status: MemoryVerificationStatus;
+  confidence: number;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
   created_by: string;
   created_at: string;
-  visibility_scope: "private" | "family" | "clinical";
-  consent_scope: ConsentScope;
+  updated_at: string;
   provenance_id: string;
-  status: "active" | "archived" | "deleted";
+  status: "active" | "archived";
+}
+
+export interface MemoryMedia {
+  id: string;
+  memory_id: string;
+  media_asset_id: string;
+  role: "primary_photo" | "supporting_photo" | "voice_note" | "document";
+  caption?: string;
+  display_order: number;
+  source: MemorySource;
+  verification_status: MemoryVerificationStatus;
+  confidence: number;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryPerson {
+  id: string;
+  memory_id: string;
+  person_entity_id: string;
+  name: string;
+  relationship: string;
+  role_in_memory?: string; // e.g. "groom", "student", "companion"
+  source: MemorySource;
+  verification_status: MemoryVerificationStatus;
+  confidence: number;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryVoiceNote {
+  id: string;
+  memory_id: string;
+  media_asset_id?: string;
+  speaker_name: string;
+  relationship: string;
+  audio_url: string;
+  transcript: string;
+  language: string; // e.g. "as", "en", "hi"
+  duration_seconds?: number;
+  source: MemorySource;
+  verification_status: MemoryVerificationStatus;
+  confidence: number;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface MemoryItem {
@@ -86,16 +95,11 @@ export interface MemoryItem {
   approximate_period: string; // e.g. "1958 - 1965", "1968 (Wedding)"
   source: MemorySource;
   verification_status: MemoryVerificationStatus;
-  verified_by?: string;
-  verified_at?: string;
   confidence: number;
-  sensitivity: "low" | "medium" | "high";
-  is_sensitive?: boolean;
-  game_eligible?: boolean;
-  visibility_scope?: "private" | "family" | "clinical";
-  consent_scope?: ConsentScope;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
   cultural_context: string; // e.g. "Tezpur, Assam / Rongali Bihu / Teaching"
-  life_event_id?: string;
   media_refs: string[]; // media_asset IDs
   people_refs: Array<{
     person_entity_id: string;
@@ -111,12 +115,133 @@ export interface MemoryItem {
     transcript: string;
     language: string;
     verified: boolean;
-    media_asset_id?: string;
-    b2_audio_key?: string;
   }>;
-  embedding_vector?: number[];
+  created_by: string;
   created_at: string;
   updated_at: string;
+  verified_by?: string;
+  verified_at?: string;
+  verification_notes?: string;
+}
+
+export interface FamiliarPlace {
+  id: string;
+  person_id: string;
+  name: string;
+  assamese_name?: string;
+  category: "home" | "school" | "workplace" | "river_ghat" | "temple_naamghar" | "tea_garden" | "market" | "veranda_courtyard" | "relative_home" | "other";
+  significance: string; // Personal meaning e.g. "Safe primary residence near river"
+  description: string;
+  landmark_cues: string[]; // e.g. ["Old veranda with green bamboo railing", "Courtyard mango tree"]
+  sensory_cues?: {
+    visual?: string[];
+    auditory?: string[];
+    olfactory?: string[];
+  };
+  approximate_period?: string;
+  coordinates?: {
+    latitude: number;
+    longitude: number;
+  } | null; // Optional: coordinates never required for cognitive games
+  media_refs: string[]; // media_asset IDs
+  source: MemorySource;
+  verification_status: MemoryVerificationStatus;
+  confidence: number;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  verified_by?: string;
+  verified_at?: string;
+  verification_notes?: string;
+}
+
+export interface RouteSegment {
+  id: string;
+  route_id: string;
+  segment_order: number;
+  from_landmark: string;
+  to_landmark: string;
+  visual_cue: string;
+  sensory_description?: string;
+  turn_instruction?: "straight" | "turn_left" | "turn_right" | "arrive" | "cross_courtyard";
+  photo_asset_id?: string;
+  is_key_decision_point: boolean;
+  source: MemorySource;
+  verification_status: MemoryVerificationStatus;
+  confidence: number;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FamiliarRoute {
+  id: string;
+  person_id: string;
+  title: string;
+  assamese_title?: string;
+  description: string;
+  start_place_id: string;
+  destination_place_id: string;
+  routine_frequency?: "daily" | "weekly" | "past_routine" | "occasional";
+  estimated_walk_time_mins?: number;
+  difficulty: 1 | 2 | 3;
+  segments?: RouteSegment[];
+  source: MemorySource;
+  verification_status: MemoryVerificationStatus;
+  confidence: number;
+  consent_scope: ConsentScope;
+  visibility_scope: VisibilityScope;
+  sensitivity: SensitivityLevel;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  verified_by?: string;
+  verified_at?: string;
+  verification_notes?: string;
+}
+
+export interface MemoryExperienceHistory {
+  id: string;
+  person_id: string;
+  game_key: "reminiscence_journey_my_world" | "route_builder_familiar_places" | "my_life_timeline" | "prepare_for" | "experience_braid" | string;
+  target_entity_type: "memory" | "place" | "route";
+  target_entity_id: string;
+  interaction_type: "recognition" | "sequencing" | "landmark_identification" | "voice_reminiscence" | "route_tracing";
+  latency_ms: number;
+  assistance_level: "none" | "visual_cue" | "family_voice" | "caregiver_prompt";
+  recall_success: boolean;
+  engagement_score: number; // 0.0 - 1.0
+  notes?: string;
+  recorded_at: string;
+}
+
+export interface GameContextSnapshot {
+  id: string;
+  person_id: string;
+  game_key: "reminiscence_journey_my_world" | "route_builder_familiar_places" | string;
+  snapshot_timestamp: string;
+  capability_summary: {
+    recognition: number;
+    photo_recognition: number;
+    recall: number;
+    sequencing: number;
+    recommended_difficulty: 1 | 2 | 3;
+    max_choice_count: 2 | 3 | 4;
+  };
+  eligible_memories_count: number;
+  eligible_places_count: number;
+  eligible_routes_count: number;
+  eligible_memory_ids: string[];
+  eligible_place_ids: string[];
+  eligible_route_ids: string[];
+  verification_hash: string;
+  created_at: string;
 }
 
 export interface FutureEvent {
@@ -130,38 +255,11 @@ export interface FutureEvent {
   relationship?: string;
   location: string;
   scheduled_at: string; // ISO string e.g. "2026-09-10T16:00:00"
-  status: FutureEventStatus;
+  status: "expected" | "confirmed" | "occurred" | "cancelled";
   source: MemorySource;
   verification_status: MemoryVerificationStatus;
   preparation_steps?: string[];
   valid_until?: string;
-}
-
-export interface MemoryFirewallQuery {
-  actor_id: string;
-  actor_role: "person_self" | "primary_caregiver" | "secondary_caregiver" | "chw" | "clinician" | "system_agent";
-  purpose: "personal_view" | "care_coordination" | "game_generation" | "clinical_assessment" | "research";
-  person_id: string;
-  requested_memory_ids?: string[];
-  target_cognitive_family?: string;
-  allow_sensitive?: boolean;
-  require_verified?: boolean;
-}
-
-export interface MemoryFirewallEvaluation {
-  allowed: boolean;
-  decision: "ALLOW" | "DENY" | "PARTIAL";
-  reason: string;
-  actor_id: string;
-  actor_role: string;
-  purpose: string;
-  filtered_memories: MemoryItem[];
-  excluded_memories: Array<{
-    id: string;
-    title: string;
-    exclusion_reason: string;
-  }>;
-  timestamp: string;
 }
 
 export interface PersonalGameContextPack {
@@ -175,7 +273,8 @@ export interface PersonalGameContextPack {
   };
   world: {
     people: Array<{ id: string; name: string; relationship: string; verified: boolean; phone?: string }>;
-    places: Array<{ id: string; name: string; significance: string }>;
+    places: Array<FamiliarPlace | { id: string; name: string; significance: string }>;
+    routes?: FamiliarRoute[];
     routines: Array<{ id: string; name: string; time: string; items: string[] }>;
     memories: MemoryItem[];
     future_events: FutureEvent[];
@@ -268,15 +367,25 @@ export interface GameSpec {
 
 export interface GameTrialTelemetry {
   trial_index: number;
-  step_name: string;
-  stimulus: string;
-  user_selection: string;
+  step_name?: string;
+  stimulus?: string;
+  user_selection?: string;
   is_correct?: boolean;
+  is_success?: boolean;
   latency_ms: number;
   assistance_level: "none" | "visual_cue" | "family_voice" | "caregiver_prompt";
-  hint_used: boolean;
-  completion_state: "success" | "assisted" | "skipped";
-  measurement_quality_q: number;
+  hint_used?: boolean;
+  hints_used_count?: number;
+  completion_state?: "success" | "assisted" | "skipped";
+  measurement_quality_q?: number;
+  item_id?: string;
+  item_type?: string;
+  presented_at?: string;
+  responded_at?: string;
+  modality?: string;
+  difficulty_level?: number;
+  user_action?: string;
+  notes?: string;
 }
 
 export interface ExperienceEpisode {
@@ -290,6 +399,9 @@ export interface ExperienceEpisode {
     time_of_day: string;
     modality: string;
     difficulty: number;
+    environment?: string;
+    session_duration_sec?: number;
+    offline_generated?: boolean;
   };
   engagement_score: number; // 0.0 - 1.0
   assistance_rate: number; // e.g. 0.2 (20% assisted)
@@ -300,165 +412,76 @@ export interface ExperienceEpisode {
     domain: string;
     delta: number;
     new_estimate: number;
+    applied?: boolean;
+    reason_if_skipped?: string;
   };
   created_at: string;
-}
-
-// ── Additional Core Database Entities (Neon PostgreSQL + pgvector) ──────────
-
-export interface MemoryMedia {
-  memory_id: string;
-  media_asset_id: string;
-  role: "primary_photo" | "supporting_photo" | "background_music" | "document";
-  sequence_order: number;
-}
-
-export interface MemoryPeople {
-  memory_id: string;
-  person_entity_id: string;
-  relationship: string;
-  confidence: number;
-  verification_status: MemoryVerificationStatus;
-}
-
-export interface MemoryVoiceNote {
-  id: string;
-  memory_id: string;
-  speaker_entity_id: string;
-  speaker_name: string;
-  relationship: string;
-  media_asset_id?: string;
-  transcript: string;
-  language: string;
-  consent_scope: ConsentScope;
-  verification_status: MemoryVerificationStatus;
-}
-
-export interface GameTemplate {
-  id: string;
-  template_key: "my_life_timeline" | "prepare_for" | "experience_braid" | "memory_match" | "courtyard_sensory";
-  version: string;
-  title: string;
-  cognitive_family: "autobiographical_sequencing" | "prospective_orientation" | "semantic_association" | "executive_planning";
-  supported_modalities: string[];
-  supported_difficulty_range: [number, number];
-  offline_capable: boolean;
-  schema: Record<string, any>;
-  safety_constraints: Record<string, any>;
-}
-
-export interface GameSession {
-  id: string;
-  person_id: string;
-  game_spec_id: string;
-  started_at: string;
-  ended_at?: string;
-  status: "in_progress" | "completed" | "abandoned" | "fatigue_halted";
-  device_context: Record<string, any>;
-  language: string;
-  fatigue_context: {
-    continuous_minutes: number;
-    slowed_taps_detected: boolean;
-    assistance_spike: boolean;
+  trials_telemetry?: GameTrialTelemetry[];
+  skips_count?: number;
+  completion_status?: "completed" | "abandoned" | "paused" | string;
+  provenance_audit?: {
+    verified_records_count?: number;
+    unverified_records_count?: number;
+    data_layer_version?: string;
+    [key: string]: any;
   };
-}
 
-export interface GameTrial {
-  id: string;
-  session_id: string;
-  step_index: number;
-  stimulus: string;
-  response: string;
-  response_type: "choice" | "reorder" | "voice_tap" | "reminder_toggle";
-  latency_bucket: "<2s" | "2-5s" | ">5s";
-  latency_ms: number;
-  assistance_level: "none" | "visual_cue" | "family_voice" | "caregiver_prompt";
-  hint_used: boolean;
-  completion_state: "success" | "assisted" | "skipped";
-  measurement_quality: number; // 0.0 - 1.0
-  created_at: string;
+  // Extended Personal Cognitive Data Layer dimensions
+  game_template?: string;
+  game_spec_id?: string;
+  target_content?: {
+    memory_ids?: string[];
+    place_ids?: string[];
+    route_id?: string;
+    waypoints?: string[];
+    people_refs?: string[];
+  };
+  difficulty?: number;
+  scaffolding_level?: string;
+  modality?: string;
+  assistance?: {
+    level: "none" | "visual_cue" | "family_voice" | "caregiver_prompt";
+    assisted_count: number;
+    assistance_rate: number;
+  };
+  hints?: {
+    requested_count: number;
+    types_used: string[];
+  };
+  completion?: {
+    completed_gracefully: boolean;
+    all_steps_completed: boolean;
+    keepsake_woven: boolean;
+  };
+  skip?: {
+    skipped_count: number;
+    skipped_step_indices: number[];
+  };
+  engagement?: {
+    score: number;
+    qualitative: "high_interest" | "calm_contentment" | "mild_hesitation" | "rest_requested";
+  };
+  interaction_quality?: {
+    mean_latency_ms: number;
+    latency_variance?: number;
+    touch_target_stability: "steady" | "mild_hesitation" | "assisted";
+    fatigue_detected: boolean;
+  };
+  measurement_quality_details?: {
+    q_score: number;
+    valid_for_capability_update: boolean;
+    degradation_reasons: string[];
+  };
+  provenance?: {
+    provenance_refs: string[];
+    verified_by_actors: string[];
+    verification_status_summary: string;
+  };
+  cross_game_implications?: {
+    recognized_place_ids?: string[];
+    struggled_landmark_ids?: string[];
+    recommended_next_game?: string;
+    recommended_scaffolding_level?: string;
+  };
+  idempotency_key?: string;
 }
-
-export interface GameGenerationRun {
-  id: string;
-  person_id: string;
-  request_id: string;
-  template_candidates: string[];
-  selected_template: string;
-  generation_mode: GameGenerationMode;
-  context_refs: string[];
-  retrieval_refs: string[];
-  model: string;
-  prompt_version: string;
-  spec_version: string;
-  validation_results: {
-    grounding_passed: boolean;
-    consent_passed: boolean;
-    safety_passed: boolean;
-    dignity_passed: boolean;
-    schema_passed: boolean;
-    all_passed: boolean;
-    violations: string[];
-  };
-  fallback_reason?: string;
-  created_at: string;
-}
-
-// ── 9 Personalization Dimensions ─────────────────────────────────────────────
-export interface PersonalizationContext9D {
-  person: { id: string; name: string; honorific: string };
-  memory: MemoryItem[];
-  context: { location: string; time_of_day: string; environmental_calm: boolean };
-  capability: { recognition_pct: number; sequencing_pct: number; max_choice_count: number };
-  history: { recent_sessions: number; last_completed: string };
-  preferences: { visual_photo_first: boolean; family_voices: string[]; liked_topics: string[] };
-  time: { current_slot: "morning" | "afternoon" | "evening"; upcoming_event?: string };
-  culture: { region: string; dialect: string; tea_tradition: string; seasonal_festival: string };
-  goal: { active_goal_id: string; objective: string };
-  modality: "photo_plus_voice" | "visual_tactile" | "multi_modal";
-  assistance: "none" | "visual_cue" | "family_voice" | "step_by_step";
-}
-
-// ── 7-Layer Hybrid RAG Query & Result ─────────────────────────────────────────
-export interface HybridRetrievalQuery {
-  person_id: string;
-  query_intent: string;
-  temporal_filter?: TemporalFrame;
-  include_media?: boolean;
-  required_verification?: MemoryVerificationStatus;
-}
-
-export interface HybridRetrievalResult {
-  layer1_graph: {
-    primary_caregiver: { name: string; relationship: string; phone: string };
-    key_family_members: Array<{ name: string; relationship: string }>;
-    grounded_locations: string[];
-  };
-  layer2_temporal: {
-    past_anchors: string[];
-    present_routine: string;
-    future_events: FutureEvent[];
-  };
-  layer3_semantic: MemoryItem[];
-  layer4_media: MediaAsset[];
-  layer5_experience_memory: {
-    effective_modalities: string[];
-    effective_scaffolding: string[];
-    recent_accuracy_rate: number;
-    recommended_duration_mins: number;
-  };
-  layer6_capability: {
-    autobiographical_recognition_score: number;
-    executive_sequencing_score: number;
-    free_recall_score: number;
-    recommended_difficulty: 1 | 2 | 3;
-    max_choices: 2 | 3;
-  };
-  layer7_cae_policy: {
-    action: "engage_familiar" | "introduce_scaffold" | "soothe_fatigue";
-    scaffold_progression: string;
-    target_cognitive_family: "autobiographical_sequencing" | "prospective_orientation" | "executive_planning";
-  };
-  assembled_context_pack: PersonalGameContextPack;
-}
-

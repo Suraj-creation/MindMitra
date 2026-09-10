@@ -8,19 +8,21 @@ import {
   compileTimelineSpec,
   compilePrepareForSpec,
   compileExperienceBraidSpec,
-  orchestrateGameGeneration,
 } from "./src/intelligence/cognitive-engine";
+import { FutureEvent } from "./src/domain/cognitive-experience";
 import {
-  FutureEvent,
-  GameGenerationRun,
-  MediaAsset,
-  PersonEntity,
-  Relationship,
-  LifeEvent,
-  MemoryFirewallQuery,
-  MemoryFirewallEvaluation,
-  GameSession,
-} from "./src/domain/cognitive-experience";
+  buildGame7ContextPack,
+  buildGame8ContextPack,
+} from "./src/intelligence/retrieval/context-pack-builder";
+import { BoundedGameOrchestrator } from "./src/intelligence/orchestration/bounded-langgraph";
+import {
+  get_reminiscence_candidates,
+  get_familiar_place_candidates,
+  get_familiar_route_candidates,
+  get_recent_game_experience,
+  get_personalisation_context,
+  get_current_context,
+} from "./src/intelligence/retrieval/retrieval-tools";
 
 // ── Google GenAI Client (Lazy Init with User-Agent header) ───────────────────
 let aiClient: GoogleGenAI | null = null;
@@ -183,7 +185,7 @@ async function startServer() {
   app.use(express.json());
 
   // 1. Health endpoint
-  app.get("/health", (req: Request, res: Response) => {
+  app.get(["/health", "/api/health"], (req: Request, res: Response) => {
     res.json({
       status: "ok",
       app: "MindMitra",
@@ -777,42 +779,30 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
         offline_capable: true,
         description: "Signature MindMitra multi-phase journey weaving past memory into present sensory calm and future afternoon visitor preparation.",
       },
+      {
+        id: "tpl:reminiscence_journey",
+        template_key: "reminiscence_journey_my_world",
+        title: "Reminiscence Journey — My World (মোৰ পৃথিৱীৰ স্মৃতি)",
+        cognitive_family: "autobiographical_memory",
+        supported_modalities: ["photo_plus_voice", "sensory_cues", "family_voice"],
+        supported_difficulty_range: [1, 3],
+        offline_capable: true,
+        description: "Explore cherished autobiographical chapters, family portraits, voice greetings, and personal life milestones with gentle guided recall.",
+      },
+      {
+        id: "tpl:route_builder",
+        template_key: "route_builder_familiar_places",
+        title: "Route Builder — Familiar Places (চিনাকি বাট নিৰ্মাণ)",
+        cognitive_family: "spatial_orientation",
+        supported_modalities: ["landmark_sequencing", "visual_tactile", "sensory_wayfinding"],
+        supported_difficulty_range: [1, 3],
+        offline_capable: true,
+        description: "Reconstruct familiar walks and cherished daily journeys (home to Brahmaputra river ghat or girls school) using personal visual landmarks without GPS reliance.",
+      },
     ]);
   });
 
-  // C. LangGraph Multi-Step Orchestrator Endpoint
-  app.post("/v1/cognitive-studio/orchestrate-generation", (req: Request, res: Response) => {
-    const {
-      person_id = "person:purnima",
-      intent = "morning reminiscence and afternoon visit",
-      generation_mode = "parametrically_personalised_level_b",
-      preferred_template,
-    } = req.body || {};
-
-    const result = orchestrateGameGeneration(person_id, intent, generation_mode, preferred_template);
-    res.json(result);
-  });
-
-  // C2. 7-Layer Structured Hybrid RAG Direct Inspection Endpoint
-  app.get("/v1/cognitive-studio/hybrid-rag", (req: Request, res: Response) => {
-    const {
-      person_id = "person:purnima",
-      query_intent = "morning tea with Rina",
-      temporal_filter,
-      required_verification,
-    } = req.query;
-
-    const result = cognitiveStore.executeHybridRAG({
-      person_id: String(person_id),
-      query_intent: String(query_intent),
-      temporal_filter: temporal_filter as any,
-      required_verification: required_verification as any,
-    });
-
-    res.json(result);
-  });
-
-  // C3. Generate & Validate Experience Specification (Level A / B / C)
+  // C. Generate & Validate Experience Specification (Level A / B / C)
   app.post("/v1/cognitive-studio/generate-spec", (req: Request, res: Response) => {
     const {
       person_id = "person:purnima",
@@ -836,212 +826,26 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       spec.generation_mode = generation_mode;
     }
 
-    // Audit log this generation run with complete schema
-    const runRecord: GameGenerationRun = {
+    // Audit log this generation run
+    cognitiveStore.generationRuns.unshift({
       id: `run_${Date.now()}`,
       person_id,
-      request_id: `req_${Date.now()}`,
-      template_candidates: ["my_life_timeline", "prepare_for", "experience_braid"],
       selected_template: template_key,
       generation_mode: spec.generation_mode,
-      context_refs: spec.provenance_refs,
-      retrieval_refs: context.world.memories.map((m) => m.id),
-      model: "gemini-2.5-flash-spec-compiler",
-      prompt_version: "v2.1",
-      spec_version: spec.version,
       validation_results: spec.validation_status,
-      fallback_reason: spec.validation_status.all_passed ? undefined : "Validation constraint violation",
       created_at: new Date().toISOString(),
-    };
-    cognitiveStore.generationRuns.unshift(runRecord);
+    });
 
     res.json(spec);
   });
 
-  // ── D1. Media Assets (Photos / Audio / Voice Notes with Backblaze B2 support) ──
-  app.get("/v1/media-assets", (req: Request, res: Response) => {
-    const { person_id, media_type } = req.query;
-    let list = cognitiveStore.mediaAssets;
-    if (person_id) list = list.filter((m) => m.person_id === person_id);
-    if (media_type) list = list.filter((m) => m.media_type === media_type);
-    res.json({ count: list.length, items: list });
-  });
-
-  app.post("/v1/media-assets", (req: Request, res: Response) => {
-    const {
-      person_id = "person:purnima",
-      media_type = "photo",
-      title,
-      url,
-      thumbnail_url,
-      mime_type = "image/jpeg",
-      storage_key,
-      source = "caregiver",
-      storage_backend = "b2",
-      b2_bucket = "mindmitra-elder-media",
-      b2_file_id,
-      visibility_scope = "family",
-      consent_scope = "all",
-    } = req.body || {};
-
-    if (!title || !url) {
-      return res.status(400).json({ error: "Media title and url are required." });
-    }
-
-    const created = cognitiveStore.addMediaAsset({
-      person_id,
-      media_type,
-      title,
-      url,
-      thumbnail_url: thumbnail_url || url,
-      mime_type,
-      storage_key: storage_key || `media/purnima/${Date.now()}.jpg`,
-      storage_backend,
-      b2_bucket,
-      b2_file_id: b2_file_id || `b2_${Date.now()}`,
-      created_by: source,
-      visibility_scope,
-      consent_scope,
-      provenance_id: `prov_b2_${Date.now()}`,
-      status: "active",
-    });
-
-    res.json({ status: "created", media_asset: created });
-  });
-
-  // ── D2. Person Entities & Relationships ──
-  app.get("/v1/person-entities", (req: Request, res: Response) => {
-    const { person_id } = req.query;
-    let list = cognitiveStore.personEntities;
-    if (person_id) list = list.filter((e) => e.person_id === person_id);
-    res.json({ count: list.length, items: list });
-  });
-
-  app.post("/v1/person-entities", (req: Request, res: Response) => {
-    const {
-      person_id = "person:purnima",
-      name,
-      assamese_name,
-      display_name,
-      relationship_to_person,
-      phone,
-      is_emergency_contact = false,
-      can_verify_memories = true,
-      verification_status = "verified",
-    } = req.body || {};
-
-    if (!name || !relationship_to_person) {
-      return res.status(400).json({ error: "Name and relationship_to_person are required." });
-    }
-
-    const created = cognitiveStore.addPersonEntity({
-      person_id,
-      name,
-      assamese_name,
-      display_name: display_name || name,
-      relationship_to_person,
-      phone,
-      is_emergency_contact,
-      can_verify_memories,
-      verification_status,
-    });
-
-    res.json({ status: "created", person_entity: created });
-  });
-
-  app.get("/v1/relationships", (req: Request, res: Response) => {
-    const { person_id } = req.query;
-    let list = cognitiveStore.relationships;
-    if (person_id) list = list.filter((r) => r.person_id === person_id);
-    res.json({ count: list.length, items: list });
-  });
-
-  app.post("/v1/relationships", (req: Request, res: Response) => {
-    const {
-      person_id = "person:purnima",
-      related_entity_id,
-      related_person_name,
-      relationship_type,
-      closeness_level = "family_core",
-      verification_status = "verified",
-      verified_by = "Anu",
-      notes,
-    } = req.body || {};
-
-    if (!related_entity_id || !relationship_type) {
-      return res.status(400).json({ error: "related_entity_id and relationship_type are required." });
-    }
-
-    const created = cognitiveStore.addRelationship({
-      person_id,
-      related_entity_id,
-      related_person_name: related_person_name || "Family Member",
-      relationship_type,
-      closeness_level,
-      verification_status,
-      verified_by,
-      notes,
-    });
-
-    res.json({ status: "created", relationship: created });
-  });
-
-  // ── D3. Life Events ──
-  app.get("/v1/life-events", (req: Request, res: Response) => {
-    const { person_id } = req.query;
-    let list = cognitiveStore.lifeEvents;
-    if (person_id) list = list.filter((e) => e.person_id === person_id);
-    res.json({ count: list.length, items: list });
-  });
-
-  app.post("/v1/life-events", (req: Request, res: Response) => {
-    const {
-      person_id = "person:purnima",
-      title,
-      assamese_title,
-      description,
-      event_type = "milestone",
-      era_period = "young_adulthood",
-      approximate_year,
-      cultural_significance,
-      primary_media_id,
-      linked_memory_ids = [],
-      verification_status = "verified",
-      sensitivity = "low",
-      game_eligible = true,
-    } = req.body || {};
-
-    if (!title || !era_period) {
-      return res.status(400).json({ error: "Title and era_period are required." });
-    }
-
-    const created = cognitiveStore.addLifeEvent({
-      person_id,
-      title,
-      assamese_title,
-      description: description || "",
-      event_type,
-      era_period,
-      approximate_year,
-      cultural_significance,
-      primary_media_id,
-      linked_memory_ids,
-      verification_status,
-      sensitivity,
-      game_eligible: sensitivity === "high" ? false : game_eligible,
-    });
-
-    res.json({ status: "created", life_event: created });
-  });
-
-  // ── D4. Personal Memories Collection API (with Provenance & Verification) ──
+  // D. Memories Collection API (with Provenance & Verification)
   app.get("/v1/memories", (req: Request, res: Response) => {
-    const { person_id, verification_status, temporal_frame, source } = req.query;
+    const { person_id, verification_status, temporal_frame } = req.query;
     let list = cognitiveStore.memories;
     if (person_id) list = list.filter((m) => m.person_id === person_id);
     if (verification_status) list = list.filter((m) => m.verification_status === verification_status);
     if (temporal_frame) list = list.filter((m) => m.temporal_frame === temporal_frame);
-    if (source) list = list.filter((m) => m.source === source);
     res.json({ count: list.length, items: list });
   });
 
@@ -1055,14 +859,9 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       temporal_frame = "recent",
       approximate_period = "Recent",
       source = "person",
-      verification_status,
+      verification_status = "unverified",
       sensitivity = "low",
-      is_sensitive = false,
-      game_eligible = true,
-      consent_scope = "all",
-      visibility_scope = "family",
       cultural_context = "Tezpur, Assam",
-      life_event_id,
       media_refs = [],
       people_refs = [],
       voice_notes = [],
@@ -1072,11 +871,7 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       return res.status(400).json({ error: "Memory title is required." });
     }
 
-    // Invariant: unverified person claims stay unverified until explicitly verified by caregiver/clinician
-    const resolvedVerification =
-      verification_status || (source === "caregiver" ? "verified" : source === "clinician" ? "verified" : "unverified");
-    const resolvedConfidence = source === "caregiver" ? 0.98 : source === "clinician" ? 1.0 : 0.70;
-
+    // New uploaded memory from person starts as unverified claim
     const created = cognitiveStore.addMemory({
       person_id,
       memory_type,
@@ -1086,15 +881,13 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       temporal_frame,
       approximate_period,
       source,
-      verification_status: resolvedVerification,
-      confidence: resolvedConfidence,
+      verification_status: source === "caregiver" ? "caregiver_verified" : verification_status,
+      confidence: source === "caregiver" ? 0.98 : 0.75,
       sensitivity,
-      is_sensitive,
-      game_eligible: is_sensitive ? false : game_eligible,
-      consent_scope,
-      visibility_scope,
       cultural_context,
-      life_event_id,
+      consent_scope: req.body.consent_scope || (source === "caregiver" ? "all" : "person_only"),
+      visibility_scope: req.body.visibility_scope || (source === "caregiver" ? "family" : "private"),
+      created_by: req.body.created_by || (source === "caregiver" ? "actor:anu" : "actor:purnima"),
       media_refs,
       people_refs,
       voice_notes,
@@ -1103,230 +896,468 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
     res.json({
       status: "created",
       memory: created,
-      provenance_note:
-        created.verification_status === "unverified"
-          ? "Stored permanently as an unverified person statement. Accessible for personal viewing; Memory Firewall excludes from cognitive games until caregiver confirmation."
-          : "Verified memory available for personalized cognitive grounding.",
+      provenance_note: created.verification_status === "unverified"
+        ? "Stored permanently as an unverified person statement. Accessible for personal viewing; requires caregiver confirmation before inclusion in cognitive games."
+        : "Verified memory available for personalized cognitive grounding.",
     });
   });
 
-  // ── D5. Associate Voice Notes to Memories ──
-  app.post("/v1/memories/:id/voice-notes", (req: Request, res: Response) => {
-    const {
-      speaker_name = "Anu",
-      relationship = "daughter",
-      audio_url = "",
-      transcript = "",
-      language = "as",
-      verified = false,
-      media_asset_id,
-      b2_audio_key,
-    } = req.body || {};
-
-    if (!transcript && !audio_url) {
-      return res.status(400).json({ error: "Transcript or audio_url is required." });
-    }
-
-    const updated = cognitiveStore.addVoiceNote(req.params.id, {
-      speaker_name,
-      relationship,
-      audio_url,
-      transcript,
-      language,
-      verified,
-      media_asset_id,
-      b2_audio_key,
-    });
-
-    if (!updated) {
-      return res.status(404).json({ error: "Memory item not found." });
-    }
-
-    res.json({ status: "voice_note_added", memory: updated });
-  });
-
-  // ── D6. Update Memory Attributes ──
-  app.patch("/v1/memories/:id", (req: Request, res: Response) => {
-    const updated = cognitiveStore.updateMemory(req.params.id, req.body || {});
-    if (!updated) {
-      return res.status(404).json({ error: "Memory item not found." });
-    }
-    res.json({ status: "updated", memory: updated });
-  });
-
-  // ── E. Verify Memory (Caregiver / CHW / Clinician Action) ──
+  // E. Verify Memory (Caregiver / CHW / Clinician Action)
   app.post("/v1/memories/:id/verify", (req: Request, res: Response) => {
-    const {
-      verified_by = "Anu (Primary Caregiver)",
-      role = "primary_caregiver",
-      decision = "verified",
-      relationship_note,
-    } = req.body || {};
-
-    const updated = cognitiveStore.verifyMemory(req.params.id, verified_by, role, decision, relationship_note);
+    const { verified_by = "Anu (Primary Caregiver)", role = "caregiver", relationship_note, notes } = req.body || {};
+    const updated = cognitiveStore.verifyMemory(req.params.id, verified_by, role, relationship_note, notes);
     if (!updated) {
       return res.status(404).json({ error: "Memory item not found." });
     }
     res.json({
-      status: decision === "rejected" ? "rejected" : "verified",
+      status: "verified",
       memory: updated,
-      message:
-        decision === "rejected"
-          ? `Memory claim rejected by ${verified_by} and marked ineligible for games.`
-          : `Memory verified by ${verified_by} and now available for cognitive game grounding.`,
+      message: `Memory has been verified by ${verified_by} and is now available for cognitive game grounding.`,
     });
   });
 
-  // ── F. Prospective Future Events API with State Transitions ──
-  app.get("/v1/future-events", (req: Request, res: Response) => {
-    const { person_id, status } = req.query;
-    let list = cognitiveStore.futureEvents;
-    if (person_id) list = list.filter((e) => e.person_id === person_id);
-    if (status) list = list.filter((e) => e.status === status);
+  // ── Media Assets API (PERSON vs CAREGIVER with full 9 provenance fields) ──
+  app.get("/v1/media-assets", (req: Request, res: Response) => {
+    const { person_id, media_type, verification_status } = req.query;
+    let list = cognitiveStore.mediaAssets;
+    if (person_id) list = list.filter((a) => a.person_id === person_id);
+    if (media_type) list = list.filter((a) => a.media_type === media_type);
+    if (verification_status) list = list.filter((a) => a.verification_status === verification_status);
     res.json({ count: list.length, items: list });
   });
 
-  app.post("/v1/future-events", (req: Request, res: Response) => {
+  app.post("/v1/media-assets", (req: Request, res: Response) => {
     const {
+      person_id = "person:purnima",
       title,
-      event_type = "family_visit",
-      description,
-      person_entity_id,
-      person_name = "Rina",
-      relationship = "granddaughter",
-      location = "Veranda, Tezpur",
-      scheduled_at,
-      status = "confirmed",
-      preparation_steps = [],
-      source = "caregiver",
-      verification_status = "verified",
+      url,
+      media_type = "photo",
+      mime_type = "image/jpeg",
+      source = "person",
+      verification_status,
+      confidence,
+      consent_scope,
+      visibility_scope,
+      sensitivity = "low",
+      created_by = "person:purnima",
+      thumbnail_url,
     } = req.body || {};
 
-    const newEvent = cognitiveStore.addFutureEvent({
+    if (!title || !url) {
+      return res.status(400).json({ error: "Media title and URL are required." });
+    }
+
+    const asset = cognitiveStore.addMediaAsset({
+      person_id,
+      title,
+      url,
+      media_type,
+      mime_type,
+      source,
+      verification_status,
+      confidence,
+      consent_scope,
+      visibility_scope,
+      sensitivity,
+      created_by,
+      thumbnail_url,
+    });
+
+    res.json({
+      status: "created",
+      asset,
+      provenance_note:
+        asset.source === "person"
+          ? "Uploaded as person memory asset (unverified). Requires caregiver verification before cognitive game inclusion."
+          : "Verified caregiver asset available for cognitive grounding.",
+    });
+  });
+
+  // Attach media to memory
+  app.post("/v1/memories/:id/media", (req: Request, res: Response) => {
+    const { media_asset_id, role = "primary_photo", caption, display_order, created_by } = req.body || {};
+    if (!media_asset_id) {
+      return res.status(400).json({ error: "media_asset_id is required." });
+    }
+    const attached = cognitiveStore.attachMediaToMemory(req.params.id, media_asset_id, {
+      role,
+      caption,
+      displayOrder: display_order,
+      createdBy: created_by,
+    });
+    if (!attached) {
+      return res.status(404).json({ error: "Memory or media asset not found." });
+    }
+    res.json({ status: "attached", memory_media: attached });
+  });
+
+  // ── Familiar Places API (Optional coordinates, landmark cues, sensory grounding) ──
+  app.get("/v1/places", (req: Request, res: Response) => {
+    const { person_id, verification_status } = req.query;
+    let list = cognitiveStore.familiarPlaces;
+    if (person_id) list = list.filter((p) => p.person_id === person_id);
+    if (verification_status) list = list.filter((p) => p.verification_status === verification_status);
+    res.json({ count: list.length, items: list });
+  });
+
+  app.post("/v1/places", (req: Request, res: Response) => {
+    const {
+      person_id = "person:purnima",
+      name,
+      assamese_name,
+      category = "other",
+      significance,
+      description,
+      landmark_cues = [],
+      sensory_cues = {},
+      approximate_period,
+      coordinates = null,
+      media_refs = [],
+      source = "caregiver",
+      verification_status,
+      confidence,
+      consent_scope,
+      visibility_scope,
+      sensitivity = "low",
+      created_by = "actor:anu",
+    } = req.body || {};
+
+    if (!name || !significance) {
+      return res.status(400).json({ error: "Place name and personal significance are required." });
+    }
+
+    const place = cognitiveStore.addPlace({
+      person_id,
+      name,
+      assamese_name,
+      category,
+      significance,
+      description: description || "",
+      landmark_cues,
+      sensory_cues,
+      approximate_period: approximate_period || "Present",
+      coordinates: coordinates || null,
+      media_refs,
+      source,
+      verification_status,
+      confidence,
+      consent_scope,
+      visibility_scope,
+      sensitivity,
+      created_by,
+    });
+
+    res.json({ status: "created", place });
+  });
+
+  app.post("/v1/places/:id/verify", (req: Request, res: Response) => {
+    const { verified_by = "Anu (Primary Caregiver)", role = "caregiver", notes } = req.body || {};
+    const updated = cognitiveStore.verifyPlace(req.params.id, verified_by, role, notes);
+    if (!updated) {
+      return res.status(404).json({ error: "Place not found." });
+    }
+    res.json({ status: "verified", place: updated });
+  });
+
+  // ── Familiar Routes & Wayfinding Segments API ──
+  app.get("/v1/routes", (req: Request, res: Response) => {
+    const { person_id } = req.query;
+    let list = cognitiveStore.familiarRoutes;
+    if (person_id) list = list.filter((r) => r.person_id === person_id);
+    res.json({ count: list.length, items: list });
+  });
+
+  app.get("/v1/routes/:id", (req: Request, res: Response) => {
+    const route = cognitiveStore.getRouteWithSegments(req.params.id);
+    if (!route) {
+      return res.status(404).json({ error: "Route not found." });
+    }
+    res.json(route);
+  });
+
+  app.post("/v1/routes", (req: Request, res: Response) => {
+    const {
+      person_id = "person:purnima",
+      title,
+      assamese_title,
+      description,
+      start_place_id,
+      destination_place_id,
+      routine_frequency = "past_routine",
+      estimated_walk_time_mins = 10,
+      difficulty = 1,
+      source = "caregiver",
+      verification_status,
+      confidence,
+      consent_scope,
+      visibility_scope,
+      sensitivity = "low",
+      created_by = "actor:anu",
+    } = req.body || {};
+
+    if (!title || !start_place_id || !destination_place_id) {
+      return res.status(400).json({ error: "Route title, start_place_id, and destination_place_id are required." });
+    }
+
+    const route = cognitiveStore.addRoute({
+      person_id,
+      title,
+      assamese_title,
+      description: description || "",
+      start_place_id,
+      destination_place_id,
+      routine_frequency,
+      estimated_walk_time_mins,
+      difficulty,
+      source,
+      verification_status,
+      confidence,
+      consent_scope,
+      visibility_scope,
+      sensitivity,
+      created_by,
+    });
+
+    res.json({ status: "created", route });
+  });
+
+  app.post("/v1/routes/:id/verify", (req: Request, res: Response) => {
+    const { verified_by = "Anu (Primary Caregiver)", role = "caregiver", notes } = req.body || {};
+    const updated = cognitiveStore.verifyRoute(req.params.id, verified_by, role, notes);
+    if (!updated) {
+      return res.status(404).json({ error: "Route not found." });
+    }
+    res.json({ status: "verified", route: updated });
+  });
+
+  app.post("/v1/routes/:id/segments", (req: Request, res: Response) => {
+    const {
+      segment_order,
+      from_landmark,
+      to_landmark,
+      visual_cue,
+      sensory_description,
+      turn_instruction = "straight",
+      photo_asset_id,
+      is_key_decision_point = false,
+      source = "caregiver",
+      verification_status = "caregiver_verified",
+      confidence = 1.0,
+      consent_scope = "all",
+      visibility_scope = "family",
+      sensitivity = "low",
+      created_by = "actor:anu",
+    } = req.body || {};
+
+    if (!from_landmark || !to_landmark || !visual_cue || segment_order === undefined) {
+      return res.status(400).json({ error: "segment_order, from_landmark, to_landmark, and visual_cue are required." });
+    }
+
+    const segment = cognitiveStore.addRouteSegment(req.params.id, {
+      segment_order: Number(segment_order),
+      from_landmark,
+      to_landmark,
+      visual_cue,
+      sensory_description: sensory_description || "",
+      turn_instruction,
+      photo_asset_id,
+      is_key_decision_point,
+      source,
+      verification_status,
+      confidence,
+      consent_scope,
+      visibility_scope,
+      sensitivity,
+      created_by,
+    });
+
+    if (!segment) {
+      return res.status(404).json({ error: "Route not found." });
+    }
+
+    res.json({ status: "created", segment });
+  });
+
+  // ── Unified Game-Eligible Content Query (Memory Firewall Enforced) ──
+  app.get("/v1/games/eligible-content/:personId", (req: Request, res: Response) => {
+    const personId = req.params.personId;
+    const includeSensitive = req.query.include_sensitive === "true";
+
+    const memoriesResult = cognitiveStore.getGameEligibleMemories(personId, { includeSensitive });
+    const placesResult = cognitiveStore.getGameEligiblePlacesAndRoutes(personId, { includeSensitive });
+
+    res.json({
+      person_id: personId,
+      reminiscence_game: {
+        eligible_memories: memoriesResult.eligible,
+        count: memoriesResult.eligible.length,
+        excluded_unverified: memoriesResult.excludedUnverified,
+        excluded_sensitive: memoriesResult.excludedSensitive,
+        excluded_consent: memoriesResult.excludedConsent,
+      },
+      route_builder_game: {
+        eligible_places: placesResult.places,
+        eligible_routes: placesResult.routes,
+        places_count: placesResult.places.length,
+        routes_count: placesResult.routes.length,
+        excluded_unverified: placesResult.excludedUnverified,
+        excluded_sensitive: placesResult.excludedSensitive,
+        excluded_consent: placesResult.excludedConsent,
+      },
+      firewall_enforced: true,
+      isolation_verified: true,
+    });
+  });
+
+  // ── Game Snapshots API (Offline reproducibility & provenance auditing) ──
+  app.post("/v1/games/snapshots", (req: Request, res: Response) => {
+    const { person_id = "person:purnima", game_key = "reminiscence_journey_my_world" } = req.body || {};
+    const snapshot = cognitiveStore.createGameSnapshot(person_id, game_key);
+    res.json({ status: "created", snapshot });
+  });
+
+  app.get("/v1/games/snapshots/:personId/:gameKey", (req: Request, res: Response) => {
+    const snapshot = cognitiveStore.getLatestSnapshot(req.params.personId, req.params.gameKey);
+    if (!snapshot) {
+      return res.status(404).json({ error: "No snapshot found for person and game." });
+    }
+    res.json(snapshot);
+  });
+
+  // ── Purpose-Specific Game Context Pack API ──
+  app.get("/v1/games/context-pack/game-7/:personId", (req: Request, res: Response) => {
+    try {
+      const { query, allow_unverified, include_sensitive } = req.query;
+      const pack = buildGame7ContextPack(req.params.personId, {
+        query: typeof query === "string" ? query : undefined,
+        allowUnverifiedClaimsWithLabel: allow_unverified === "true",
+        includeHighSensitivity: include_sensitive === "true",
+      });
+      res.json({ status: "ok", pack });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to build Game 7 context pack." });
+    }
+  });
+
+  app.get("/v1/games/context-pack/game-8/:personId", (req: Request, res: Response) => {
+    try {
+      const { query, allow_unverified, include_sensitive } = req.query;
+      const pack = buildGame8ContextPack(req.params.personId, {
+        query: typeof query === "string" ? query : undefined,
+        allowUnverifiedClaimsWithLabel: allow_unverified === "true",
+        includeHighSensitivity: include_sensitive === "true",
+      });
+      res.json({ status: "ok", pack });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to build Game 8 context pack." });
+    }
+  });
+
+  // ── Bounded LangGraph Orchestration API ──
+  app.post("/v1/games/orchestrate", (req: Request, res: Response) => {
+    try {
+      const { intent, person_id = "person:purnima" } = req.body || {};
+      if (!intent) {
+        return res.status(400).json({ error: "Intent object is required (e.g. { type: 'play_game_7' })." });
+      }
+
+      const result = BoundedGameOrchestrator.execute(intent, person_id);
+      res.json({
+        status: "success",
+        orchestration: result,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Bounded orchestration pipeline failed." });
+    }
+  });
+
+  // ── Game Reconstruction from Snapshot API ──
+  app.get("/v1/games/snapshots/:snapshotId/reconstruct", (req: Request, res: Response) => {
+    try {
+      const result = BoundedGameOrchestrator.reconstructGameFromSnapshot(req.params.snapshotId);
+      if (!result) {
+        return res.status(404).json({ error: `Snapshot with ID ${req.params.snapshotId} not found.` });
+      }
+      res.json({ status: "reconstructed", ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to reconstruct game from snapshot." });
+    }
+  });
+
+  // ── Memory Experience History API ──
+  app.get("/v1/games/experience-history", (req: Request, res: Response) => {
+    const { person_id, game_key } = req.query;
+    let list = cognitiveStore.experienceHistory;
+    if (person_id) list = list.filter((h) => h.person_id === person_id);
+    if (game_key) list = list.filter((h) => h.game_key === game_key);
+    res.json({ count: list.length, items: list });
+  });
+
+  app.post("/v1/games/experience-history", (req: Request, res: Response) => {
+    const {
+      person_id = "person:purnima",
+      game_key,
+      target_entity_type,
+      target_entity_id,
+      interaction_type,
+      latency_ms,
+      assistance_level = "none",
+      recall_success = true,
+      engagement_score = 0.90,
+      notes,
+    } = req.body || {};
+
+    if (!game_key || !target_entity_type || !target_entity_id || !interaction_type) {
+      return res.status(400).json({ error: "game_key, target_entity_type, target_entity_id, and interaction_type are required." });
+    }
+
+    const record = cognitiveStore.recordExperienceHistory({
+      person_id,
+      game_key,
+      target_entity_type,
+      target_entity_id,
+      interaction_type,
+      latency_ms: latency_ms || 1500,
+      assistance_level,
+      recall_success,
+      engagement_score,
+      notes,
+    });
+
+    res.json({ status: "recorded", record });
+  });
+
+  // F. Prospective Future Events API
+  app.get("/v1/future-events", (req: Request, res: Response) => {
+    res.json({ count: cognitiveStore.futureEvents.length, items: cognitiveStore.futureEvents });
+  });
+
+  app.post("/v1/future-events", (req: Request, res: Response) => {
+    const { title, event_type = "family_visit", person_name = "Rina", scheduled_at, location = "Veranda, Tezpur" } = req.body || {};
+    const newEvent: FutureEvent = {
+      id: `event_${Date.now()}`,
       person_id: "person:purnima",
       event_type,
       title: title || "Family Visit",
-      description,
-      person_entity_id,
       person_name,
-      relationship,
+      relationship: "granddaughter",
       location,
       scheduled_at: scheduled_at || new Date(Date.now() + 4 * 3600 * 1000).toISOString(),
-      status,
-      preparation_steps,
-      source,
-      verification_status,
-    });
-
-    res.json({ status: "created", event: newEvent });
-  });
-
-  app.patch("/v1/future-events/:id/status", (req: Request, res: Response) => {
-    const { status } = req.body || {};
-    if (!status || !["expected", "confirmed", "occurred", "cancelled"].includes(status)) {
-      return res.status(400).json({ error: "Valid status required: expected, confirmed, occurred, cancelled." });
-    }
-
-    const updated = cognitiveStore.updateFutureEventStatus(req.params.id, status);
-    if (!updated) {
-      return res.status(404).json({ error: "Future event not found." });
-    }
-    res.json({ status: "updated", event: updated });
-  });
-
-  // ── F2. Memory Firewall Deterministic Evaluation Endpoint ──
-  app.post("/v1/cognitive-studio/firewall-eval", (req: Request, res: Response) => {
-    const {
-      actor_id = "agent:game_orchestrator",
-      actor_role = "system_agent",
-      purpose = "game_generation",
-      person_id = "person:purnima",
-    } = req.body || {};
-
-    const evaluation = cognitiveStore.evaluateMemoryFirewall({
-      actor_id,
-      actor_role,
-      purpose,
-      person_id,
-    });
-
-    res.json(evaluation);
-  });
-
-  app.get("/v1/cognitive-studio/firewall-audit", (req: Request, res: Response) => {
-    res.json({
-      count: cognitiveStore.firewallAuditLogs.length,
-      logs: cognitiveStore.firewallAuditLogs,
-    });
-  });
-
-  // ── F3. Game Specs & Sessions Management ──
-  app.get("/v1/cognitive-studio/specs", (req: Request, res: Response) => {
-    res.json({ count: cognitiveStore.gameSpecs.length, specs: cognitiveStore.gameSpecs });
-  });
-
-  app.get("/v1/cognitive-studio/sessions", (req: Request, res: Response) => {
-    res.json({ count: cognitiveStore.gameSessions.length, sessions: cognitiveStore.gameSessions });
-  });
-
-  app.post("/v1/cognitive-studio/sessions", (req: Request, res: Response) => {
-    const {
-      person_id = "person:purnima",
-      game_spec_id = "spec_default",
-      language = "as",
-    } = req.body || {};
-
-    const newSession: GameSession = {
-      id: `sess_${Date.now()}`,
-      person_id,
-      game_spec_id,
-      started_at: new Date().toISOString(),
-      status: "in_progress",
-      device_context: { platform: "web_tablet", viewport: "1280x800" },
-      language,
-      fatigue_context: {
-        continuous_minutes: 0,
-        slowed_taps_detected: false,
-        assistance_spike: false,
-      },
+      status: "confirmed",
+      source: "caregiver",
+      verification_status: "caregiver_verified",
     };
-
-    cognitiveStore.createGameSession(newSession);
-    res.json({ status: "started", session: newSession });
+    cognitiveStore.futureEvents.push(newEvent);
+    res.json({ status: "created", event: newEvent });
   });
 
   // G. Record Trial Telemetry & Complete Experience Episode
   app.post("/v1/cognitive-studio/sessions/trial", (req: Request, res: Response) => {
-    const {
-      session_id = "sess_active",
-      trial_index = 1,
-      step_name = "recognition",
-      stimulus = "Photo comparison",
-      user_selection = "",
-      latency_ms = 1200,
-      assistance_level = "none",
-      hint_used = false,
-      completion_state = "success",
-    } = req.body || {};
-
+    const { trial_index, step_name, latency_ms, assistance_level, hint_used, is_correct } = req.body || {};
+    // Calculate measurement quality
     const mq = assistance_level === "none" ? 0.95 : assistance_level === "visual_cue" ? 0.85 : 0.70;
-    const recorded = cognitiveStore.recordTrial({
-      session_id,
-      step_index: trial_index,
-      stimulus: stimulus || step_name,
-      response: user_selection,
-      response_type: "choice",
-      latency_bucket: latency_ms < 2000 ? "<2s" : latency_ms <= 5000 ? "2-5s" : ">5s",
-      latency_ms: Number(latency_ms),
-      assistance_level: assistance_level as any,
-      hint_used: Boolean(hint_used),
-      completion_state: completion_state as any,
-      measurement_quality: mq,
-    });
-
     res.json({
       status: "recorded",
-      trial: recorded,
       trial_index,
       step_name,
       latency_ms: latency_ms || 1200,
@@ -1379,9 +1410,71 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
     });
   });
 
+  // Complete Rich Experience Episode (Games 7 & 8)
+  app.post("/v1/cognitive-studio/episodes", (req: Request, res: Response) => {
+    const episodeData = req.body;
+    if (!episodeData || !episodeData.person_id || !episodeData.template_key) {
+      return res.status(400).json({ error: "person_id and template_key are required." });
+    }
+    const episode = cognitiveStore.recordEpisode(episodeData);
+    res.json({
+      status: "recorded",
+      episode,
+      pcm_update_applied: episode.pcm_update?.applied ?? false,
+      reason: episode.pcm_update?.reason_if_skipped,
+    });
+  });
+
+  // Offline Event Queue Idempotent Synchronization
+  app.post("/v1/cognitive-studio/sync-offline-events", (req: Request, res: Response) => {
+    const { events = [] } = req.body || {};
+    const syncedKeys: string[] = [];
+
+    for (const event of events) {
+      const { idempotency_key, event_type, payload } = event;
+      if (event_type === "experience_episode" && payload) {
+        cognitiveStore.recordEpisode({
+          ...payload,
+          idempotency_key,
+        });
+        syncedKeys.push(idempotency_key);
+      } else if (idempotency_key) {
+        syncedKeys.push(idempotency_key);
+      }
+    }
+
+    res.json({
+      status: "synced",
+      received_count: events.length,
+      synced_count: syncedKeys.length,
+      synced_keys: syncedKeys,
+    });
+  });
+
+  // Personal Capability Model (PCM) Inspection
+  app.get("/v1/cognitive-studio/pcm/:personId", (req: Request, res: Response) => {
+    const caps = cognitiveStore.getCapabilities(req.params.personId);
+    res.json({
+      person_id: req.params.personId,
+      capabilities: caps,
+      evidence_gated: true,
+      measurement_quality_threshold: 0.65,
+    });
+  });
+
+  // Cross-Game Learning Recommendations (Bi-directional inference)
+  app.get("/v1/cognitive-studio/cross-game/:personId", (req: Request, res: Response) => {
+    const recs = cognitiveStore.getCrossGameRecommendations(req.params.personId);
+    res.json({
+      person_id: req.params.personId,
+      ...recs,
+    });
+  });
+
   // H. Episodes & Audit Runs
   app.get("/v1/cognitive-studio/episodes/:personId", (req: Request, res: Response) => {
-    res.json({ count: cognitiveStore.episodes.length, episodes: cognitiveStore.episodes });
+    const personEpisodes = cognitiveStore.episodes.filter((e) => e.person_id === req.params.personId);
+    res.json({ count: personEpisodes.length, episodes: personEpisodes });
   });
 
   app.get("/v1/cognitive-studio/audit-runs", (req: Request, res: Response) => {

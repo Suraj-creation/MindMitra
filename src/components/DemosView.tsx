@@ -66,12 +66,12 @@ export const DemosView: React.FC = () => {
   };
 
   const handleRunMq = async (newSignals: ObservationSignals) => {
-    const res = await api.submitObservation("person:purnima", "orientation", 75, newSignals);
+    const res = (await api.submitObservation("person:purnima", "orientation", 75, newSignals)) as any;
     setMqResult(res);
   };
 
   const handleRunFirewall = async () => {
-    const res = await api.readPwmFact(firewallActor, "person:purnima", firewallFact, firewallPurpose);
+    const res = (await api.readPwmFact(firewallActor, "person:purnima", firewallFact, firewallPurpose)) as any;
     setFirewallResult(res);
   };
 

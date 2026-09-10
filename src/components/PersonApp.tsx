@@ -16,11 +16,16 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { CompanionPanel } from "./CompanionPanel";
+import { SaveMemoryStudio } from "./cognitive-experience/SaveMemoryStudio";
+import { CognitiveExperienceSpace } from "./cognitive-experience/CognitiveExperienceSpace";
 import { api } from "../lib/api";
 import type { PersonSection, VoiceCapability, PersonSession } from "../types";
+import { MemoryItem } from "../domain/cognitive-experience";
 
 export const PersonApp: React.FC = () => {
   const [activeSection, setActiveSection] = useState<PersonSection>("day");
+  const [showSaveMemoryModal, setShowSaveMemoryModal] = useState(false);
+  const [savedMemories, setSavedMemories] = useState<MemoryItem[]>([]);
   const [session, setSession] = useState<PersonSession>({
     personId: "person:purnima",
     displayName: "Purnima",
@@ -200,10 +205,46 @@ export const PersonApp: React.FC = () => {
 
         {activeSection === "life" && (
           <div className="w-full mt-6 space-y-4">
-            <h2 className="text-base font-bold text-[#332f29] font-serif flex items-center gap-2">
-              <ImageIcon size={20} className="text-[#5e6f4a]" />
-              Familiar Places & Memories from Assam
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-[#332f29] font-serif flex items-center gap-2">
+                <ImageIcon size={20} className="text-[#5e6f4a]" />
+                Familiar Places & Memories from Assam
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowSaveMemoryModal(true)}
+                className="px-4 py-2 rounded-xl bg-[#1a3826] hover:bg-[#2d5a3f] text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition"
+              >
+                <Sparkles size={14} /> Save Memory (স্মৃতি সংৰক্ষণ)
+              </button>
+            </div>
+
+            {/* Custom Added Memories */}
+            {savedMemories.length > 0 && (
+              <div className="p-4 bg-[#f0e6d6] rounded-2xl border border-[#d6cbba] space-y-2">
+                <p className="text-xs font-bold text-[#736a5e] uppercase tracking-wider">Recently Added to Sanctuary</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {savedMemories.map((mem) => (
+                    <div key={mem.id} className="bg-white p-3 rounded-xl border border-[#e8ded0] flex items-center gap-3">
+                      {mem.media_refs?.[0] ? (
+                        <img src={mem.media_refs[0]} alt={mem.title} className="w-12 h-12 rounded-lg object-cover" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-lg bg-[#f5efe6] flex items-center justify-center text-[#a85e46]">
+                          <Heart size={20} />
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-xs font-bold text-[#1d1c16]">{mem.title}</p>
+                        <p className="text-[11px] text-[#736a5e] line-clamp-1">{mem.description || "Cherished memory"}</p>
+                        <span className="text-[10px] text-[#5e6f4a] font-semibold">
+                          {mem.source === "caregiver" ? "Caregiver verified" : "Pending verification"}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Tea Garden Reminiscence Card */}
@@ -244,34 +285,38 @@ export const PersonApp: React.FC = () => {
         )}
 
         {activeSection === "activity" && (
-          <div className="w-full mt-6 bg-[#f7eadc] border border-[#e6ddcf] p-6 rounded-2xl">
-            <h2 className="text-base font-bold text-[#332f29] font-serif mb-4 flex items-center gap-2">
-              <Wind size={20} className="text-[#2596a3]" />
-              Gentle Calming Exercise
-            </h2>
+          <div className="w-full mt-6 space-y-6">
+            <CognitiveExperienceSpace onBackToDay={() => setActiveSection("day")} />
 
-            <div className="flex flex-col items-center justify-center p-6 bg-[#fbf1e3] border border-[#e6ddcf] rounded-xl text-center">
-              <div
-                className={`w-32 h-32 rounded-full border-4 border-[#5e6f4a] flex items-center justify-center transition-all duration-1000 ${
-                  breathingActive ? "scale-110 bg-[#e5ece0]" : "bg-[#fffdf8]"
-                }`}
-              >
-                <Wind size={36} className="text-[#5e6f4a]" />
+            <div className="bg-[#f7eadc] border border-[#e6ddcf] p-6 rounded-2xl">
+              <h2 className="text-base font-bold text-[#332f29] font-serif mb-4 flex items-center gap-2">
+                <Wind size={20} className="text-[#2596a3]" />
+                Gentle Calming Breath
+              </h2>
+
+              <div className="flex flex-col items-center justify-center p-6 bg-[#fbf1e3] border border-[#e6ddcf] rounded-xl text-center">
+                <div
+                  className={`w-32 h-32 rounded-full border-4 border-[#5e6f4a] flex items-center justify-center transition-all duration-1000 ${
+                    breathingActive ? "scale-110 bg-[#e5ece0]" : "bg-[#fffdf8]"
+                  }`}
+                >
+                  <Wind size={36} className="text-[#5e6f4a]" />
+                </div>
+                <p className="text-xl font-serif font-bold text-[#332f29] mt-4">
+                  {breathingActive ? breathingPhase : "Gentle 4-4 Breathing"}
+                </p>
+                <p className="text-xs text-[#6b6b63] max-w-sm mt-1">
+                  A calm, guided rhythm to soothe tension and bring clarity to this moment.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() => setBreathingActive(!breathingActive)}
+                  className="mt-4 px-6 py-2.5 rounded-full bg-[#5e6f4a] text-white font-semibold text-sm hover:bg-[#48583a] transition-colors"
+                >
+                  {breathingActive ? "Pause breathing" : "Begin breathing rhythm"}
+                </button>
               </div>
-              <p className="text-xl font-serif font-bold text-[#332f29] mt-4">
-                {breathingActive ? breathingPhase : "Gentle 4-4 Breathing"}
-              </p>
-              <p className="text-xs text-[#6b6b63] max-w-sm mt-1">
-                A calm, guided rhythm to soothe tension and bring clarity to this moment.
-              </p>
-
-              <button
-                type="button"
-                onClick={() => setBreathingActive(!breathingActive)}
-                className="mt-4 px-6 py-2.5 rounded-full bg-[#5e6f4a] text-white font-semibold text-sm hover:bg-[#48583a] transition-colors"
-              >
-                {breathingActive ? "Pause breathing" : "Begin breathing rhythm"}
-              </button>
             </div>
           </div>
         )}
@@ -377,6 +422,14 @@ export const PersonApp: React.FC = () => {
           <span>Help</span>
         </button>
       </nav>
+
+      {showSaveMemoryModal && (
+        <SaveMemoryStudio
+          onClose={() => setShowSaveMemoryModal(false)}
+          onMemoryAdded={(mem) => setSavedMemories((prev) => [mem, ...prev])}
+          defaultRole="person"
+        />
+      )}
     </main>
   );
 };
