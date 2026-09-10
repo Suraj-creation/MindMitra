@@ -16,15 +16,18 @@ export default function App() {
     <div className="min-h-screen bg-[--color-bg] text-[--color-text] flex flex-col font-sans selection:bg-[--color-highlight] selection:text-[--color-text]">
       <NavBar currentSurface={currentSurface} onSelectSurface={setCurrentSurface} />
 
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-6">
-        {currentSurface === "person" && <PersonApp />}
-        {currentSurface === "caregiver" && <CaregiverCopilot />}
-        {currentSurface === "asha" && <CHWCopilot />}
-        {currentSurface === "clinical" && <ClinicalBridge />}
-        {currentSurface === "demos" && <DemosView />}
-        {currentSurface === "prototypes" && <PrototypesView />}
-        {currentSurface === "assets" && <AssetStudioView />}
-      </main>
+      {currentSurface === "person" ? (
+        <PersonApp onSelectSurface={setCurrentSurface} />
+      ) : (
+        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-6">
+          {currentSurface === "caregiver" && <CaregiverCopilot />}
+          {currentSurface === "asha" && <CHWCopilot />}
+          {currentSurface === "clinical" && <ClinicalBridge />}
+          {currentSurface === "demos" && <DemosView />}
+          {currentSurface === "prototypes" && <PrototypesView />}
+          {currentSurface === "assets" && <AssetStudioView />}
+        </main>
+      )}
     </div>
   );
 }
