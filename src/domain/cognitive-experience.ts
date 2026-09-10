@@ -485,3 +485,273 @@ export interface ExperienceEpisode {
   };
   idempotency_key?: string;
 }
+
+// ── TEMPORAL ORIENTATION ENGINE DOMAIN MODELS ───────────────────────────────
+
+export type TemporalEventType =
+  | "family_visit"
+  | "routine_tea"
+  | "market_trip"
+  | "festival"
+  | "medical_appointment"
+  | "community_activity"
+  | "courtyard_routine"
+  | "cultural_preparation";
+
+export type TemporalEventStatus = "expected" | "confirmed" | "occurred" | "cancelled";
+
+export type ScaffoldLevel = "S0" | "S1" | "S2" | "S3" | "S4" | "S5";
+
+export interface TemporalEvent {
+  id: string;
+  person_id: string;
+  event_type: TemporalEventType;
+  title: string;
+  assamese_title?: string;
+  description: string;
+  start_at: string; // ISO timestamp
+  end_at?: string;
+  temporal_frame: "past" | "recent" | "present" | "future";
+  status: TemporalEventStatus;
+  confidence: number;
+  verification_status: MemoryVerificationStatus;
+  provenance: string;
+  source: MemorySource;
+  consent_scope: ConsentScope;
+  sensitivity: SensitivityLevel;
+  valid_from: string;
+  valid_until?: string;
+  people_refs: Array<{
+    person_entity_id: string;
+    name: string;
+    relationship: string;
+    verified: boolean;
+    photo_url?: string;
+  }>;
+  media_refs: string[];
+  location: string;
+  routine_anchor_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type TemporalOrientationTemplateKey = "daily_orientation" | "temporal_sorting" | "temporal_story";
+
+export interface ScaffoldStep {
+  level: ScaffoldLevel;
+  title: string;
+  instruction: string;
+  cue_text?: string;
+  photo_url?: string;
+  voice_speaker?: string;
+  voice_transcript?: string;
+  voice_audio_url?: string;
+  options?: Array<{
+    id: string;
+    label: string;
+    assamese_label?: string;
+    is_target?: boolean;
+  }>;
+  full_resolution?: string;
+}
+
+export interface TemporalOrientationContextPack {
+  person: {
+    id: string;
+    display_name: string;
+    honorific: string;
+    preferred_language: string;
+    culture: string;
+    location: string;
+  };
+  now: {
+    current_local_date: string;
+    day_of_week: string;
+    assamese_day: string;
+    part_of_day: "morning" | "afternoon" | "evening" | "night";
+    assamese_part_of_day: string;
+    current_routine: string;
+    current_environment: string;
+    local_time_formatted: string;
+  };
+  yesterday: {
+    events: TemporalEvent[];
+    meaningful_anchor?: TemporalEvent;
+    narrative_summary: string;
+    assamese_summary: string;
+  };
+  today: {
+    events: TemporalEvent[];
+    routines: Array<{ id: string; name: string; assamese_name?: string; time: string; items: string[] }>;
+    meaningful_anchor?: TemporalEvent;
+    narrative_summary: string;
+    assamese_summary: string;
+  };
+  tomorrow: {
+    events: TemporalEvent[];
+    meaningful_anchor?: TemporalEvent;
+    narrative_summary: string;
+    assamese_summary: string;
+    has_confirmed_event: boolean;
+  };
+  familiar_people: Array<{
+    id: string;
+    name: string;
+    relationship: string;
+    verified: boolean;
+    photo_url?: string;
+  }>;
+  media_assets: MediaAsset[];
+  cultural_context: {
+    season: string;
+    assamese_season: string;
+    upcoming_cultural_anchor?: string;
+    customary_greeting: string;
+  };
+  capability: {
+    present_orientation: number;
+    recent_recognition: number;
+    recent_recall: number;
+    future_recognition: number;
+    future_recall: number;
+    temporal_ordering: number;
+    photo_support_utility: number;
+    voice_support_utility: number;
+    recommended_scaffolding_start: ScaffoldLevel;
+  };
+  constraints: {
+    language: string;
+    consent_active: boolean;
+    sensitive_events_excluded: number;
+    cancelled_events_excluded: number;
+    stale_events_excluded: number;
+  };
+  provenance_ids: string[];
+  snapshot_id: string;
+  generated_at: string;
+}
+
+export interface TemporalOrientationSpec {
+  id: string;
+  person_id: string;
+  template_key: TemporalOrientationTemplateKey;
+  version: string;
+  generation_mode: GameGenerationMode;
+  title: string;
+  assamese_title: string;
+  subtitle: string;
+  objective: string;
+  cognitive_family: "temporal_orientation" | "prospective_awareness" | "temporal_sequencing";
+  temporal_frames: Array<"yesterday" | "today" | "tomorrow">;
+  anchors: {
+    recent: {
+      event_id?: string;
+      title: string;
+      assamese_title?: string;
+      description: string;
+      photo_url?: string;
+      person_name?: string;
+      relationship?: string;
+      provenance: string;
+    };
+    current: {
+      routine_id?: string;
+      title: string;
+      assamese_title?: string;
+      description: string;
+      time_of_day: string;
+      provenance: string;
+    };
+    upcoming: {
+      event_id?: string;
+      title: string;
+      assamese_title?: string;
+      description: string;
+      person_name?: string;
+      relationship?: string;
+      is_confirmed: boolean;
+      provenance: string;
+    };
+  };
+  tasks: Array<{
+    task_id: string;
+    task_primitive:
+      | "temporal_recognition"
+      | "temporal_classification"
+      | "recent_event_recognition"
+      | "future_event_recognition"
+      | "temporal_sorting"
+      | "temporal_story_reflection";
+    prompt: string;
+    assamese_prompt: string;
+    temporal_target: "yesterday" | "today" | "tomorrow";
+    interactive_type: "orient_narrative" | "tap_sort" | "choice_match" | "story_step";
+    sort_items?: Array<{
+      id: string;
+      title: string;
+      assamese_title?: string;
+      correct_frame: "yesterday" | "today" | "tomorrow";
+      icon_type?: string;
+      photo_url?: string;
+      person_label?: string;
+    }>;
+    choice_options?: Array<{
+      id: string;
+      label: string;
+      assamese_label?: string;
+      is_target: boolean;
+      photo_url?: string;
+    }>;
+    scaffolding_ladder: Record<ScaffoldLevel, ScaffoldStep>;
+  }>;
+  difficulty_profile: {
+    present_orientation_level: number;
+    recent_recall_mode: "photo_cued" | "choice_based" | "open_prompt";
+    future_recall_mode: "choice_based" | "narrative_anchored";
+    scaffolding_mode: "adaptive" | "gentle_encouragement";
+  };
+  spoken_guidance: {
+    greeting: string;
+    orientation_prompt: string;
+    encouragement: string;
+    comfort_phrase: string;
+  };
+  provenance_refs: string[];
+  validation_status: {
+    schema_passed: boolean;
+    data_authorization_passed: boolean;
+    consent_passed: boolean;
+    provenance_passed: boolean;
+    verification_passed: boolean;
+    temporal_validity_passed: boolean;
+    freshness_passed: boolean;
+    sensitivity_passed: boolean;
+    safety_passed: boolean;
+    dignity_passed: boolean;
+    personalization_passed: boolean;
+    all_passed: boolean;
+    validation_timestamp: string;
+    validation_errors?: string[];
+  };
+  snapshot_id: string;
+  expires_at?: string;
+}
+
+export interface TemporalOrientationTrialTelemetry {
+  session_id: string;
+  trial_index: number;
+  task_primitive: string;
+  temporal_frame: "yesterday" | "today" | "tomorrow" | "all";
+  stimulus: string;
+  user_selection?: string;
+  latency_ms: number;
+  scaffold_level_used: ScaffoldLevel;
+  hints_requested_count: number;
+  assistance_provided: "none" | "contextual_cue" | "photo_voice_cue" | "narrowed_choices" | "full_support";
+  completion_state: "success" | "assisted" | "gracefully_skipped";
+  compromised_trial: boolean;
+  compromise_reasons?: string[];
+  valid_for_baseline: boolean;
+  timestamp: string;
+}
+

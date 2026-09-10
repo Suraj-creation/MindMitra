@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express, { Request, Response } from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
@@ -16,6 +17,15 @@ import {
 } from "./src/intelligence/retrieval/context-pack-builder";
 import { BoundedGameOrchestrator } from "./src/intelligence/orchestration/bounded-langgraph";
 import {
+  temporalEventStore,
+  getReferenceNow,
+} from "./src/intelligence/temporal/temporal-event-store";
+import { medicationStore } from "./src/intelligence/medication-store";
+import { buildTemporalOrientationContextPack } from "./src/intelligence/temporal/temporal-context-pack-builder";
+import { BoundedTemporalOrchestrator } from "./src/intelligence/temporal/temporal-orchestrator";
+import { TemporalScaffoldingLadder } from "./src/intelligence/temporal/temporal-scaffolding-ladder";
+import { TemporalValidator } from "./src/intelligence/temporal/temporal-validator";
+import {
   get_reminiscence_candidates,
   get_familiar_place_candidates,
   get_familiar_route_candidates,
@@ -23,6 +33,15 @@ import {
   get_personalisation_context,
   get_current_context,
 } from "./src/intelligence/retrieval/retrieval-tools";
+import { checkDbHealth, getDbPool, queryDb } from "./src/db/neon";
+import { checkB2Health, getPresignedUploadUrl, getPresignedDownloadUrl } from "./src/storage/b2";
+import { runSchemaMigration } from "./src/db/migrate";
+import {
+  getDbMedications,
+  upsertDbMedication,
+  deleteDbMedication,
+  seedInitialMedicationsIfEmpty,
+} from "./src/db/medications-db";
 
 // ── Google GenAI Client (Lazy Init with User-Agent header) ───────────────────
 let aiClient: GoogleGenAI | null = null;
@@ -200,6 +219,55 @@ async function startServer() {
         north_east_languages: true,
       },
     });
+  });
+
+  // 1.1 Infrastructure status (Neon PostgreSQL + Backblaze B2 Object Storage + Gemini AI)
+  app.get("/api/infrastructure/status", async (req: Request, res: Response) => {
+    const dbStatus = await checkDbHealth();
+    const b2Status = await checkB2Health();
+    const geminiStatus = {
+      configured: Boolean(process.env.GEMINI_API_KEY),
+      model: "gemini-2.5-flash",
+    };
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      database: {
+        provider: "Neon Serverless PostgreSQL",
+        ...dbStatus,
+      },
+      storage: {
+        provider: "Backblaze B2 (S3-Compatible)",
+        ...b2Status,
+      },
+      ai: {
+        provider: "Google Gemini 2.5",
+        ...geminiStatus,
+      },
+    });
+  });
+
+  // 1.2 Neon Database Health & Schema
+  app.get("/api/db/health", async (req: Request, res: Response) => {
+    const health = await checkDbHealth();
+    res.status(health.connected ? 200 : 503).json(health);
+  });
+
+  // 1.3 Backblaze B2 Storage Health
+  app.get("/api/storage/health", async (req: Request, res: Response) => {
+    const health = await checkB2Health();
+    res.json(health);
+  });
+
+  // 1.4 Trigger Database Schema Migration / Sync
+  app.post("/api/db/migrate", async (req: Request, res: Response) => {
+    try {
+      const tables = await runSchemaMigration();
+      res.json({ status: "success", tablesCount: tables.length, tables });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ status: "error", message: msg });
+    }
   });
 
   // 2. Auth Device Login
@@ -1481,6 +1549,303 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
     res.json({ count: cognitiveStore.generationRuns.length, runs: cognitiveStore.generationRuns });
   });
 
+  // ── TEMPORAL ORIENTATION ENGINE & YESTERDAY / TODAY / TOMORROW API ─────────
+
+  // 1. Get current personal temporal context pack
+  app.get("/v1/temporal-orientation/context-pack/:personId", (req: Request, res: Response) => {
+    try {
+      const pack = buildTemporalOrientationContextPack(req.params.personId);
+      res.json({ status: "ok", pack });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to build temporal orientation context pack." });
+    }
+  });
+
+  // 2. Orchestrate temporal orientation experience
+  app.post("/v1/temporal-orientation/orchestrate", (req: Request, res: Response) => {
+    try {
+      const { person_id = "person:purnima", intent = "daily_orientation", reference_date } = req.body || {};
+      const refDate = reference_date ? new Date(reference_date) : undefined;
+      const state = BoundedTemporalOrchestrator.orchestrateTemporalExperience(person_id, intent, refDate);
+      res.json({
+        status: "success",
+        spec: state.generated_spec,
+        snapshot_id: state.snapshot_id,
+        execution_steps: state.execution_steps,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Temporal orchestration failed." });
+    }
+  });
+
+  // 3. Retrieve cached spec by snapshot ID
+  app.get("/v1/temporal-orientation/spec/:snapshotId", (req: Request, res: Response) => {
+    const spec = BoundedTemporalOrchestrator.getCachedSpec(req.params.snapshotId);
+    if (!spec) {
+      return res.status(404).json({ error: `Temporal orientation spec with snapshot ID ${req.params.snapshotId} not found.` });
+    }
+    res.json({ status: "ok", spec });
+  });
+
+  // 4. Start temporal orientation session
+  app.post("/v1/temporal-orientation/sessions/start", (req: Request, res: Response) => {
+    try {
+      const { person_id = "person:purnima", template_key = "daily_orientation" } = req.body || {};
+      const state = BoundedTemporalOrchestrator.orchestrateTemporalExperience(person_id, template_key);
+      const sessionId = `tsess_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      res.json({
+        status: "started",
+        session_id: sessionId,
+        person_id,
+        spec: state.generated_spec,
+        snapshot_id: state.snapshot_id,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to start temporal orientation session." });
+    }
+  });
+
+  // 5. Scaffolding step generator
+  app.post("/v1/temporal-orientation/sessions/scaffold", (req: Request, res: Response) => {
+    const { current_level = "S0", task_id, event_id } = req.body || {};
+    const nextLevel = TemporalScaffoldingLadder.getNextLevel(current_level);
+    res.json({
+      status: "scaffold_advanced",
+      previous_level: current_level,
+      next_level: nextLevel,
+    });
+  });
+
+  // 6. Record trial telemetry
+  app.post("/v1/temporal-orientation/sessions/trial", (req: Request, res: Response) => {
+    const {
+      session_id,
+      trial_index = 0,
+      task_primitive,
+      temporal_frame = "today",
+      scaffold_level_used = "S0",
+      latency_ms = 1200,
+      completion_state = "success",
+      assistance_provided = "none",
+    } = req.body || {};
+
+    // Check compromised trial flags (e.g. latency extreme)
+    const isCompromised = latency_ms < 200 || latency_ms > 45000;
+    const qualityQ = scaffold_level_used === "S0" ? 0.95 : scaffold_level_used === "S1" ? 0.88 : scaffold_level_used === "S2" ? 0.82 : 0.70;
+
+    res.json({
+      status: "recorded",
+      trial_index,
+      task_primitive,
+      temporal_frame,
+      scaffold_level_used,
+      latency_ms,
+      completion_state,
+      assistance_provided,
+      measurement_quality_q: qualityQ,
+      compromised_trial: isCompromised,
+    });
+  });
+
+  // 7. Complete session & record Experience Episode in cognitiveStore
+  app.post("/v1/temporal-orientation/sessions/complete", (req: Request, res: Response) => {
+    const {
+      session_id = `tsess_${Date.now()}`,
+      person_id = "person:purnima",
+      template_key = "daily_orientation",
+      trials = [],
+      engagement_score = 0.94,
+      notes = "Calm and grounded orientation through yesterday, today, and tomorrow.",
+    } = req.body || {};
+
+    const episode = cognitiveStore.recordEpisode({
+      session_id,
+      person_id,
+      template_key,
+      generation_mode: "parametrically_personalised_level_b",
+      objective: "Temporal orientation and prospective awareness",
+      context: {
+        time_of_day: "Morning",
+        modality: "photo_plus_voice",
+        difficulty: 1,
+      },
+      engagement_score,
+      assistance_rate: 0.15,
+      measurement_quality: 0.92,
+      observed_response: "Warm recognition of yesterday's pitha visit and calm anticipation of tomorrow's visit from Rina.",
+      learned_implication: "Orienting through concrete family routines and visits anchors present time with zero agitation.",
+      pcm_update: {
+        domain: "temporal_orientation",
+        delta: +0.03,
+        new_estimate: 0.88,
+      },
+    });
+
+    res.json({
+      status: "completed",
+      episode,
+      feedback: "Session completed with warmth and dignity. Personal Capability Model updated for temporal orientation.",
+    });
+  });
+
+  // 8. Temporal Events CRUD & Status Management
+  app.get("/v1/temporal-events", (req: Request, res: Response) => {
+    const { person_id = "person:purnima", include_cancelled, include_stale } = req.query;
+    const list = temporalEventStore.getEventsForPerson(person_id as string, {
+      includeCancelled: include_cancelled === "true",
+      includeStale: include_stale === "true",
+    });
+    res.json({ count: list.length, items: list });
+  });
+
+  app.post("/v1/temporal-events", (req: Request, res: Response) => {
+    const { person_id = "person:purnima", title, event_type, start_at, description, status, assamese_title, location } = req.body || {};
+    if (!title) {
+      return res.status(400).json({ error: "Title is required for temporal event." });
+    }
+    const created = temporalEventStore.addEvent({
+      person_id,
+      title,
+      assamese_title,
+      event_type: event_type || "family_visit",
+      start_at,
+      description,
+      status: status || "confirmed",
+      location: location || "Tezpur Courtyard",
+    });
+    res.json({ status: "created", event: created });
+  });
+
+  app.patch("/v1/temporal-events/:id/status", (req: Request, res: Response) => {
+    const { status } = req.body || {};
+    if (!status) {
+      return res.status(400).json({ error: "Status is required." });
+    }
+    const updated = temporalEventStore.updateEventStatus(req.params.id, status);
+    if (!updated) {
+      return res.status(404).json({ error: `Event with ID ${req.params.id} not found.` });
+    }
+    res.json({ status: "updated", event: updated });
+  });
+
+  app.post("/v1/temporal-events/reset", (req: Request, res: Response) => {
+    temporalEventStore.resetToDefaults();
+    res.json({ status: "reset", message: "Temporal events restored to default verified state." });
+  });
+
+  // 9. Medication Reminders & Caregiver Dosage Management (Synced with Neon PostgreSQL)
+  app.get("/v1/medications", async (req: Request, res: Response) => {
+    const { person_id = "person:purnima" } = req.query;
+    const dbMeds = await getDbMedications(person_id as string);
+    const medications = dbMeds || medicationStore.getAll(person_id as string);
+    const nextDue = medicationStore.getNextDue(person_id as string);
+    res.json({
+      count: medications.length,
+      items: medications,
+      next_due: nextDue || null,
+      source: dbMeds ? "neon_postgresql" : "local_memory",
+    });
+  });
+
+  app.post("/v1/medications", async (req: Request, res: Response) => {
+    const {
+      medicineName,
+      assameseName,
+      dosage,
+      scheduleTime,
+      schedulePeriod,
+      associatedRoutineKey,
+      instructions,
+      assameseInstructions,
+      caregiverName,
+      color,
+      pillShape,
+      personId = "person:purnima",
+    } = req.body || {};
+
+    if (!medicineName || !dosage || !scheduleTime) {
+      return res.status(400).json({
+        error: "medicineName, dosage, and scheduleTime are required to configure a medication reminder.",
+      });
+    }
+
+    const created = medicationStore.add(
+      {
+        medicineName,
+        assameseName,
+        dosage,
+        scheduleTime,
+        schedulePeriod: schedulePeriod || "morning",
+        associatedRoutineKey,
+        instructions,
+        assameseInstructions,
+        caregiverName: caregiverName || "Anu (Daughter)",
+        color,
+        pillShape,
+      },
+      personId
+    );
+
+    // Sync to Neon PostgreSQL
+    await upsertDbMedication(created);
+
+    res.json({ status: "created", medication: created, database_synced: true });
+  });
+
+  app.put("/v1/medications/:id", async (req: Request, res: Response) => {
+    const updated = medicationStore.update(req.params.id, req.body || {});
+    if (!updated) {
+      return res.status(404).json({ error: `Medication with ID ${req.params.id} not found.` });
+    }
+    await upsertDbMedication(updated);
+    res.json({ status: "updated", medication: updated, database_synced: true });
+  });
+
+  app.delete("/v1/medications/:id", async (req: Request, res: Response) => {
+    const deleted = medicationStore.delete(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ error: `Medication with ID ${req.params.id} not found.` });
+    }
+    await deleteDbMedication(req.params.id);
+    res.json({ status: "deleted", id: req.params.id, database_synced: true });
+  });
+
+  app.post("/v1/medications/:id/take", async (req: Request, res: Response) => {
+    const { verifiedBy = "Anu (Daughter)", takenAt } = req.body || {};
+    const updated = medicationStore.markTaken(req.params.id, takenAt, verifiedBy);
+    if (!updated) {
+      return res.status(404).json({ error: `Medication with ID ${req.params.id} not found.` });
+    }
+    await upsertDbMedication(updated);
+    res.json({
+      status: "taken",
+      medication: updated,
+      database_synced: true,
+      message: `Medication marked as taken and verified by ${verifiedBy}.`,
+    });
+  });
+
+  app.post("/v1/medications/:id/notify", (req: Request, res: Response) => {
+    const med = medicationStore.getById(req.params.id);
+    if (!med) {
+      return res.status(404).json({ error: `Medication with ID ${req.params.id} not found.` });
+    }
+    res.json({
+      status: "notification_triggered",
+      medication: med,
+      audio: {
+        chime: "three_tone_singing_bowl",
+        spokenEn: med.audioNotificationText,
+        spokenAs: med.audioNotificationTextAs,
+      },
+    });
+  });
+
+  app.post("/v1/medications/reset", (req: Request, res: Response) => {
+    const items = medicationStore.resetToDefaults();
+    res.json({ status: "reset", items });
+  });
+
   // ── Vite Middleware (Dev) / Static Serve (Prod) ───────────────────────────
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1495,6 +1860,11 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  // Seed initial medications into Neon PostgreSQL if table is empty
+  seedInitialMedicationsIfEmpty(medicationStore.getAll("person:purnima")).catch((err) => {
+    console.warn("Non-fatal error during medication database seeding:", err.message);
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`MindMitra server running on http://0.0.0.0:${PORT}`);

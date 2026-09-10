@@ -1,16 +1,23 @@
 import React from "react";
-import { X, Clock, Sun, Coffee, Trees, Utensils, Phone, Flame, Moon, CheckCircle2 } from "lucide-react";
+import { X, Clock, Sun, Coffee, Trees, Utensils, Phone, Flame, Moon, CheckCircle2, Volume2, Pill } from "lucide-react";
+import { MedicationReminder } from "../domain/medication";
 
 interface Props {
   onClose: () => void;
   routineCompleted: Record<string, boolean>;
   onToggleRoutine: (key: string) => void;
+  medications?: MedicationReminder[];
+  onPlayMedicationAudio?: (med: MedicationReminder) => void;
+  onToggleMedicationTaken?: (id: string) => void;
 }
 
 export const FullDayScheduleModal: React.FC<Props> = ({
   onClose,
   routineCompleted,
   onToggleRoutine,
+  medications = [],
+  onPlayMedicationAudio,
+  onToggleMedicationTaken,
 }) => {
   const scheduleItems = [
     {
@@ -118,37 +125,113 @@ export const FullDayScheduleModal: React.FC<Props> = ({
             const Icon = item.icon;
             const isDone = Boolean(routineCompleted[item.key]);
 
+            const matchingMeds = medications.filter(
+              (m) => m.associatedRoutineKey === item.key
+            );
+
             return (
               <div
                 key={item.key}
-                onClick={() => onToggleRoutine(item.key)}
-                className="pt-3.5 first:pt-0 flex items-start justify-between gap-4 cursor-pointer group hover:bg-[#f8f3ea]/60 p-2 rounded-2xl transition"
+                className="pt-3.5 first:pt-0 space-y-2.5"
               >
-                <div className="flex items-start gap-3.5">
-                  <div className={`w-11 h-11 rounded-2xl ${item.color} flex items-center justify-center shrink-0 mt-0.5 shadow-xs`}>
-                    <Icon size={20} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-[#904d00] bg-[#ffdcc3]/60 px-2 py-0.5 rounded-md">
-                        {item.time}
-                      </span>
-                      <h3 className={`font-serif font-semibold text-base text-[#1d1c16] ${isDone ? "line-through opacity-60" : ""}`}>
-                        {item.title}
-                      </h3>
+                <div
+                  onClick={() => onToggleRoutine(item.key)}
+                  className="flex items-start justify-between gap-4 cursor-pointer group hover:bg-[#f8f3ea]/60 p-2 rounded-2xl transition"
+                >
+                  <div className="flex items-start gap-3.5">
+                    <div className={`w-11 h-11 rounded-2xl ${item.color} flex items-center justify-center shrink-0 mt-0.5 shadow-xs`}>
+                      <Icon size={20} />
                     </div>
-                    <p className="text-xs text-[#424843] mt-1 leading-relaxed">
-                      {item.desc}
-                    </p>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-[#904d00] bg-[#ffdcc3]/60 px-2 py-0.5 rounded-md">
+                          {item.time}
+                        </span>
+                        <h3 className={`font-serif font-semibold text-base text-[#1d1c16] ${isDone ? "line-through opacity-60" : ""}`}>
+                          {item.title}
+                        </h3>
+                      </div>
+                      <p className="text-xs text-[#424843] mt-1 leading-relaxed">
+                        {item.desc}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 pt-1">
+                    <CheckCircle2
+                      size={24}
+                      className={isDone ? "text-[#1a3826] fill-[#1a3826]/20" : "text-[#c2c8c1] group-hover:text-[#727972]"}
+                    />
                   </div>
                 </div>
 
-                <div className="shrink-0 pt-1">
-                  <CheckCircle2
-                    size={24}
-                    className={isDone ? "text-[#1a3826] fill-[#1a3826]/20" : "text-[#c2c8c1] group-hover:text-[#727972]"}
-                  />
-                </div>
+                {/* Synced Medication Reminders for this routine slot */}
+                {matchingMeds.length > 0 && (
+                  <div className="ml-14 space-y-2">
+                    {matchingMeds.map((med) => {
+                      const isMedTaken = med.status === "taken";
+                      return (
+                        <div
+                          key={med.id}
+                          className="bg-[#f0e8db] border border-[#dfd4c0] rounded-2xl p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs shadow-2xs"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className="w-7 h-7 rounded-xl bg-[#1a3826] text-white flex items-center justify-center shrink-0">
+                              <Pill size={14} />
+                            </span>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-[#1a3826]">
+                                  {med.medicineName}
+                                </span>
+                                <span className="bg-[#eaf0e4] text-[#2c401e] font-semibold px-2 py-0.5 rounded text-[10px]">
+                                  Dose: {med.dosage}
+                                </span>
+                              </div>
+                              <p className="text-[#595043] text-[11px] mt-0.5">
+                                {med.assameseName} • {med.scheduleTime}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 self-end sm:self-center">
+                            {onPlayMedicationAudio && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onPlayMedicationAudio(med);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-white border border-[#c2c8c1] text-[#1a3826] font-medium text-[11px] hover:bg-[#f8f3ea] flex items-center gap-1 transition"
+                              >
+                                <Volume2 size={13} />
+                                <span>Audio</span>
+                              </button>
+                            )}
+
+                            {onToggleMedicationTaken && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onToggleMedicationTaken(med.id);
+                                }}
+                                className={`px-2.5 py-1 rounded-lg font-medium text-[11px] flex items-center gap-1 transition ${
+                                  isMedTaken
+                                    ? "bg-[#eaf0e4] text-[#2c401e]"
+                                    : "bg-[#1a3826] text-white hover:bg-[#2d5a3f]"
+                                }`}
+                              >
+                                <CheckCircle2 size={13} />
+                                <span>{isMedTaken ? "Taken" : "Mark Dose"}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}

@@ -151,6 +151,55 @@ class AmbientAudioEngine {
     });
   }
 
+  /**
+   * Dementia-friendly gentle brass bell / singing bowl chime for medication reminders.
+   * Plays a warm 3-tone peaceful ascending triad (C5 -> E5 -> G5) with natural acoustic decay.
+   */
+  public playMedicationChime(): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const notes = [
+      { freq: 523.25, time: 0.0, dur: 1.8 }, // C5
+      { freq: 659.25, time: 0.28, dur: 1.8 }, // E5
+      { freq: 783.99, time: 0.56, dur: 2.4 }, // G5
+    ];
+
+    notes.forEach(({ freq, time, dur }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + time);
+
+      // Warm attack and gentle bell ring-out
+      const startTime = ctx.currentTime + time;
+      gain.gain.setValueAtTime(0.0001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.09, startTime + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + dur);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(startTime);
+      osc.stop(startTime + dur + 0.1);
+
+      this.activeNodes.push({
+        stop: () => {
+          try {
+            osc.stop();
+          } catch {
+            // Safe
+          }
+        },
+        disconnect: () => {
+          osc.disconnect();
+          gain.disconnect();
+        },
+      });
+    });
+  }
+
   public stop(): void {
     this.isPlaying = false;
     for (const node of this.activeNodes) {

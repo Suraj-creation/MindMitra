@@ -359,3 +359,66 @@ CREATE TABLE IF NOT EXISTS memory_firewall_audit_log (
 CREATE INDEX IF NOT EXISTS idx_firewall_audit_person ON memory_firewall_audit_log(person_id);
 CREATE INDEX IF NOT EXISTS idx_firewall_audit_time ON memory_firewall_audit_log(timestamp);
 
+-- ----------------------------------------------------------------------------
+-- 17. TEMPORAL EVENTS (Personal Temporal Orientation & Anchor Substrate)
+-- Granular representation of past/recent, present, and future events with lifecycle states
+-- (expected -> confirmed -> occurred | cancelled | stale), day rollover awareness,
+-- and strict provenance/verification gating.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS temporal_events (
+    id VARCHAR(64) PRIMARY KEY,
+    person_id VARCHAR(64) NOT NULL,
+    event_type VARCHAR(64) NOT NULL CHECK (event_type IN (
+        'family_visit', 'routine_tea', 'market_trip', 'festival',
+        'medical_appointment', 'community_activity', 'courtyard_routine', 'cultural_preparation'
+    )),
+    title VARCHAR(255) NOT NULL,
+    assamese_title VARCHAR(255),
+    description TEXT,
+    start_at TIMESTAMPTZ NOT NULL,
+    end_at TIMESTAMPTZ,
+    temporal_frame VARCHAR(32) NOT NULL CHECK (temporal_frame IN ('past', 'recent', 'present', 'future')),
+    status VARCHAR(32) NOT NULL DEFAULT 'confirmed' CHECK (status IN ('expected', 'confirmed', 'occurred', 'cancelled')),
+    confidence NUMERIC(3, 2) NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    verification_status VARCHAR(32) NOT NULL DEFAULT 'caregiver_verified' CHECK (verification_status IN ('unverified', 'caregiver_verified', 'chw_verified', 'clinician_verified')),
+    provenance VARCHAR(128) NOT NULL,
+    source VARCHAR(32) NOT NULL DEFAULT 'caregiver' CHECK (source IN ('person', 'caregiver', 'chw', 'clinician', 'system_obs')),
+    consent_scope VARCHAR(32) NOT NULL DEFAULT 'all' CHECK (consent_scope IN ('person_only', 'family', 'games', 'reminiscence', 'all')),
+    sensitivity VARCHAR(32) NOT NULL DEFAULT 'low' CHECK (sensitivity IN ('low', 'medium', 'high')),
+    valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valid_until TIMESTAMPTZ,
+    people_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+    media_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+    location VARCHAR(255) NOT NULL DEFAULT 'Tezpur Home',
+    routine_anchor_id VARCHAR(64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_temporal_events_person_time ON temporal_events(person_id, start_at);
+CREATE INDEX IF NOT EXISTS idx_temporal_events_status ON temporal_events(status);
+CREATE INDEX IF NOT EXISTS idx_temporal_events_frame ON temporal_events(temporal_frame);
+CREATE INDEX IF NOT EXISTS idx_temporal_events_validity ON temporal_events(valid_from, valid_until);
+
+-- ----------------------------------------------------------------------------
+-- 18. TEMPORAL ORIENTATION SESSIONS & INTERACTIVE TRIALS
+-- Tracks multi-step orientation progression, dynamic scaffolding ladder (S0 to S5),
+-- and measurement validity flags.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS temporal_orientation_sessions (
+    id VARCHAR(64) PRIMARY KEY,
+    person_id VARCHAR(64) NOT NULL,
+    template_key VARCHAR(64) NOT NULL CHECK (template_key IN ('daily_orientation', 'temporal_sorting', 'temporal_story')),
+    session_status VARCHAR(32) NOT NULL DEFAULT 'active' CHECK (session_status IN ('active', 'completed', 'gracefully_skipped', 'revalidated')),
+    temporal_context_snapshot_id VARCHAR(64) NOT NULL,
+    current_round INT NOT NULL DEFAULT 1,
+    current_scaffold_level VARCHAR(8) NOT NULL DEFAULT 'S0' CHECK (current_scaffold_level IN ('S0', 'S1', 'S2', 'S3', 'S4', 'S5')),
+    trials JSONB NOT NULL DEFAULT '[]'::jsonb,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_temporal_sessions_person ON temporal_orientation_sessions(person_id);
+
+

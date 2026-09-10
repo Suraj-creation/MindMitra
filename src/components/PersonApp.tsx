@@ -27,11 +27,19 @@ import {
   Play,
   Pause,
   Info,
+  Pill,
+  Database,
 } from "lucide-react";
 import { SaveMemoryStudio } from "./cognitive-experience/SaveMemoryStudio";
 import { CognitiveExperienceSpace } from "./cognitive-experience/CognitiveExperienceSpace";
 import { FullDayScheduleModal } from "./FullDayScheduleModal";
 import { RinaCallModal } from "./RinaCallModal";
+import { InfrastructureStatusModal } from "./InfrastructureStatusModal";
+import { MedicationRemindersPanel } from "./medications/MedicationRemindersPanel";
+import { MedicationAudioNotificationModal } from "./medications/MedicationAudioNotificationModal";
+import { CaregiverDosageModal } from "./medications/CaregiverDosageModal";
+import { medicationStore } from "../intelligence/medication-store";
+import { MedicationReminder, MedicationDoseInput } from "../domain/medication";
 import { api } from "../lib/api";
 import { ambientAudio } from "../lib/ambient-audio";
 import { speakWarmly, cancelEmpathicSpeech } from "../lib/empathic-speech";
@@ -49,6 +57,7 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
   const [showSaveMemoryModal, setShowSaveMemoryModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showRinaModal, setShowRinaModal] = useState(false);
+  const [showInfraModal, setShowInfraModal] = useState(false);
   const [savedMemories, setSavedMemories] = useState<MemoryItem[]>([]);
 
   // Audio / Sound states
@@ -86,6 +95,37 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
     prayer: false,
     night_rest: false,
   });
+
+  // Medication Reminders & Dosage Sync state
+  const [medications, setMedications] = useState<MedicationReminder[]>(() =>
+    medicationStore.getAll("person:purnima")
+  );
+  const [activeMedicationAlert, setActiveMedicationAlert] = useState<MedicationReminder | null>(null);
+
+  const handleMarkMedicationTaken = (id: string) => {
+    const updated = medicationStore.markTaken(id, new Date().toISOString(), "Anu (Daughter)");
+    if (updated) {
+      setMedications(medicationStore.getAll("person:purnima"));
+      if (updated.associatedRoutineKey) {
+        setRoutineCompleted((s) => ({ ...s, [updated.associatedRoutineKey]: true }));
+      }
+    }
+  };
+
+  const handleAddMedication = (input: MedicationDoseInput) => {
+    medicationStore.add(input, "person:purnima");
+    setMedications(medicationStore.getAll("person:purnima"));
+  };
+
+  const handleUpdateMedication = (id: string, updates: Partial<MedicationReminder>) => {
+    medicationStore.update(id, updates);
+    setMedications(medicationStore.getAll("person:purnima"));
+  };
+
+  const handleDeleteMedication = (id: string) => {
+    medicationStore.delete(id);
+    setMedications(medicationStore.getAll("person:purnima"));
+  };
 
   // Breathing loop for calming activities
   const [breathingActive, setBreathingActive] = useState(false);
@@ -336,6 +376,18 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
 
         {/* Right Actions: Language, Audio Guidance, Profile */}
         <div className="flex items-center gap-2.5">
+          {/* Neon DB Telemetry Pill */}
+          <button
+            type="button"
+            onClick={() => setShowInfraModal(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold text-emerald-800 shadow-2xs transition"
+            title="Neon PostgreSQL Database: Connected (Click for live telemetry & Backblaze status)"
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <Database size={13} className="text-emerald-700" />
+            <span className="hidden sm:inline">Neon DB</span>
+          </button>
+
           {/* Language Toggle */}
           <button
             type="button"
@@ -669,6 +721,20 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
               </div>
             </div>
           </section>
+
+          {/* ── 2.5 SECTION: MEDICATION REMINDERS & SCHEDULE SYNC (ঔষধৰ সময়সূচী) ── */}
+          <div className="max-w-7xl mx-auto px-4 sm:px-8">
+            <MedicationRemindersPanel
+              medications={medications}
+              language={language}
+              routineCompleted={routineCompleted}
+              onMarkTaken={handleMarkMedicationTaken}
+              onAddMedication={handleAddMedication}
+              onUpdateMedication={handleUpdateMedication}
+              onDeleteMedication={handleDeleteMedication}
+              onOpenFullSchedule={() => setShowScheduleModal(true)}
+            />
+          </div>
 
           {/* ── 3. SECTION: SOMETHING MEANINGFUL TO DO (মনৰ আনন্দ · GENTLE JOYS) ── */}
           <section className="max-w-7xl mx-auto px-4 sm:px-8 space-y-6">
@@ -1421,6 +1487,21 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
           onToggleRoutine={(key) =>
             setRoutineCompleted((s) => ({ ...s, [key]: !s[key] }))
           }
+          medications={medications}
+          onPlayMedicationAudio={(med) => setActiveMedicationAlert(med)}
+          onToggleMedicationTaken={handleMarkMedicationTaken}
+        />
+      )}
+
+      {activeMedicationAlert && (
+        <MedicationAudioNotificationModal
+          medication={activeMedicationAlert}
+          language={language}
+          onClose={() => setActiveMedicationAlert(null)}
+          onMarkTaken={(id) => {
+            handleMarkMedicationTaken(id);
+            setActiveMedicationAlert(null);
+          }}
         />
       )}
 
@@ -1435,6 +1516,11 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
           defaultRole="person"
         />
       )}
+
+      <InfrastructureStatusModal
+        isOpen={showInfraModal}
+        onClose={() => setShowInfraModal(false)}
+      />
     </div>
   );
 };

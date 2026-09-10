@@ -4,9 +4,11 @@ import { PrepareForEngine } from "./PrepareForEngine";
 import { ExperienceBraidEngine } from "./ExperienceBraidEngine";
 import { ReminiscenceJourneyEngine } from "./ReminiscenceJourneyEngine";
 import { RouteBuilderEngine } from "./RouteBuilderEngine";
+import { YesterdayTodayTomorrowEngine } from "./YesterdayTodayTomorrowEngine";
 import { SaveMemoryStudio } from "./SaveMemoryStudio";
 import { CognitiveTelemetryInspector } from "./CognitiveTelemetryInspector";
 import { PersonalGameContextInspector } from "./PersonalGameContextInspector";
+import { TemporalEngineInspector } from "./TemporalEngineInspector";
 import { GameTrialTelemetry, MemoryItem, ExperienceEpisode } from "../../domain/cognitive-experience";
 import {
   ExperienceEpisodeBuilder,
@@ -21,11 +23,12 @@ interface Props {
 
 export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
   const [activeEngine, setActiveEngine] = useState<
-    "none" | "timeline" | "prepare" | "braid" | "garland" | "reminiscence" | "route_builder"
+    "none" | "timeline" | "prepare" | "braid" | "garland" | "reminiscence" | "route_builder" | "temporal"
   >("none");
   const [showMemoryStudio, setShowMemoryStudio] = useState<boolean>(false);
   const [showTelemetryInspector, setShowTelemetryInspector] = useState<boolean>(false);
   const [showRetrievalInspector, setShowRetrievalInspector] = useState<boolean>(false);
+  const [showTemporalInspector, setShowTemporalInspector] = useState<boolean>(false);
   const [completionBanner, setCompletionBanner] = useState<string | null>(null);
   const [lastEpisode, setLastEpisode] = useState<ExperienceEpisode | null>(null);
 
@@ -38,7 +41,9 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
     setActiveEngine("none");
 
     const templateKey =
-      prevEngine === "timeline"
+      prevEngine === "temporal"
+        ? "yesterday_today_tomorrow"
+        : prevEngine === "timeline"
         ? "my_life_timeline"
         : prevEngine === "prepare"
         ? "prepare_for"
@@ -51,7 +56,9 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
         : "sensory_garland";
 
     const domain =
-      prevEngine === "route_builder"
+      prevEngine === "temporal"
+        ? "temporal_orientation"
+        : prevEngine === "route_builder"
         ? "spatial_orientation"
         : prevEngine === "prepare"
         ? "executive_planning"
@@ -129,6 +136,10 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
         <PersonalGameContextInspector onClose={() => setShowRetrievalInspector(false)} />
       )}
 
+      {showTemporalInspector && (
+        <TemporalEngineInspector onClose={() => setShowTemporalInspector(false)} />
+      )}
+
       {/* Completion Banner */}
       {completionBanner && (
         <div className="bg-[#eaf0e4] border border-[#bdd4b0] text-[#2c401e] rounded-2xl p-4 text-center text-xs sm:text-sm shadow-sm transition">
@@ -137,6 +148,13 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
       )}
 
       {/* ── ACTIVE DETERMINISTIC ENGINE VIEWS ── */}
+      {activeEngine === "temporal" && (
+        <YesterdayTodayTomorrowEngine
+          onComplete={handleEngineComplete}
+          onBack={() => setActiveEngine("none")}
+        />
+      )}
+
       {activeEngine === "timeline" && (
         <MyLifeTimelineEngine
           onComplete={handleEngineComplete}
@@ -312,6 +330,12 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
                 >
                   <span>⚡ Retrieval & LangGraph</span>
                 </button>
+                <button
+                  onClick={() => setShowTemporalInspector(true)}
+                  className="bg-[#faf6f0] border border-[#b8860b]/50 text-[#7a5900] text-xs font-medium px-4 py-2.5 rounded-xl hover:bg-[#faf2df] transition shadow-sm flex items-center gap-1.5"
+                >
+                  <span>⏳ Temporal & Anchors</span>
+                </button>
               </div>
             </div>
           </div>
@@ -368,6 +392,42 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {/* Daily Orientation: Yesterday, Today & Tomorrow */}
+              <div
+                onClick={() => setActiveEngine("temporal")}
+                className="cursor-pointer bg-[#faf6f0] border-2 border-[#485935] hover:border-[#384629] rounded-3xl p-5 space-y-4 shadow-sm transition duration-200 transform hover:-translate-y-1 flex flex-col justify-between"
+              >
+                <div className="space-y-3">
+                  <div className="h-44 rounded-2xl overflow-hidden bg-[#e8e0d2] relative">
+                    <img
+                      src="/assets/images/assamese_courtyard_1788980055319.jpg"
+                      alt="Yesterday, Today & Tomorrow"
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute top-2 left-2 bg-[#485935] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                      Daily Orientation
+                    </div>
+                    <div className="absolute bottom-2 left-2 bg-black/65 text-white text-[10px] px-2 py-0.5 rounded backdrop-blur-sm">
+                      Tomorrow: Rina Visiting 🕊️
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-xs font-semibold text-[#485935]">Temporal Orientation & Grounding</span>
+                    <h4 className="text-lg font-serif font-medium text-[#2c2824] mt-0.5">
+                      Yesterday, Today & Tomorrow <span className="text-xs font-normal text-[#736a5e]">(কালি, আজি আৰু কাইলৈ)</span>
+                    </h4>
+                    <p className="text-xs text-[#595043] mt-1 leading-relaxed">
+                      Connect yesterday's courtyard moments with today's calm routine and anticipate tomorrow's confirmed visit from Rina.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-[#dfd4c0] flex justify-between items-center text-xs">
+                  <span className="text-[#736a5e]">S0-S5 Adaptive Ladder</span>
+                  <span className="font-semibold text-[#485935]">Enter Orientation →</span>
+                </div>
+              </div>
+
               {/* Game 7: Reminiscence Journey — My World */}
               <div
                 onClick={() => setActiveEngine("reminiscence")}

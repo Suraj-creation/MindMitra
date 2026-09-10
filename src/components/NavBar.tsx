@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   HeartHandshake,
   User,
@@ -8,8 +8,10 @@ import {
   Layers,
   Sparkles,
   ShieldCheck,
+  Database,
 } from "lucide-react";
 import type { RoleSurface } from "../types";
+import { InfrastructureStatusModal } from "./InfrastructureStatusModal";
 
 interface NavBarProps {
   currentSurface: RoleSurface;
@@ -17,6 +19,8 @@ interface NavBarProps {
 }
 
 export const NavBar: React.FC<NavBarProps> = ({ currentSurface, onSelectSurface }) => {
+  const [showInfraModal, setShowInfraModal] = useState(false);
+
   if (currentSurface === "person") {
     return null;
   }
@@ -129,12 +133,29 @@ export const NavBar: React.FC<NavBarProps> = ({ currentSurface, onSelectSurface 
           </button>
         </nav>
 
+        {/* DB & Cloud Telemetry Button */}
+        <button
+          type="button"
+          onClick={() => setShowInfraModal(true)}
+          className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100 transition-colors shadow-2xs"
+          title="Neon DB & Cloud Infrastructure Status"
+        >
+          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <Database size={13} className="text-emerald-700" />
+          <span>Neon DB: Connected</span>
+        </button>
+
         {/* SIH Ministry Badge */}
         <div className="hidden lg:flex items-center gap-2 text-xs text-[#424843] bg-[#ece8df] border border-[#c2c8c1] px-3 py-1.5 rounded-full">
           <span className="w-2 h-2 rounded-full bg-[#1a3826] animate-pulse" />
           <span className="font-medium text-[#1d1c16]">PS26003 (MDoNER)</span>
         </div>
       </div>
+
+      <InfrastructureStatusModal
+        isOpen={showInfraModal}
+        onClose={() => setShowInfraModal(false)}
+      />
     </header>
   );
 };
