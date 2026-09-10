@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@mindmitra/domain": [
+        "./src/domain/index.ts"
+      ],
+      "@mindmitra/domain/*": [
+        "./src/domain/*"
+      ],
+      "@mindmitra/ui-tokens": [
+        "./src/ui-tokens/index.ts"
+      ],
+      "@mindmitra/ui-tokens/*": [
+        "./src/ui-tokens/*"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  }
+}
