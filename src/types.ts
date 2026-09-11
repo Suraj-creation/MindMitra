@@ -7,7 +7,7 @@ export type RoleSurface =
   | "prototypes"
   | "assets";
 
-export type PersonSection = "day" | "life" | "activity" | "help";
+export type PersonSection = "day" | "life" | "activity" | "people" | "help";
 
 export interface VoiceCapability {
   supported: boolean;
@@ -25,11 +25,28 @@ export interface PersonSession {
 }
 
 export interface CompanionAction {
-  type: "navigate" | "call_contact" | "start_activity" | "play_music" | "show_media" | "provide_scaffold" | "set_reminder";
+  /**
+   * `suggest_experience` is an OFFER, not an instruction: the companion has a
+   * planned, validated activity ready and the person may take it or not. It is
+   * never auto-executed -- see PersonApp's action handler.
+   */
+  type:
+    | "navigate"
+    | "call_contact"
+    | "start_activity"
+    | "play_music"
+    | "show_media"
+    | "provide_scaffold"
+    | "set_reminder"
+    | "suggest_experience";
   label: string;
   target?: string;
   phone?: string;
   payload?: Record<string, any>;
+  /** Prompt 4 §21: "low" may execute directly; "requires_confirmation" (the
+   * default for call_contact) must not auto-dial without an explicit human
+   * confirmation step. */
+  risk?: "low" | "requires_confirmation";
 }
 
 export interface CompanionVoiceMeta {
@@ -91,6 +108,20 @@ export interface CompanionTurn {
   context_snapshot?: UIContextContract;
   safety_passed?: boolean;
   speakable?: boolean;
+  /**
+   * A calm, declinable offer of a real, already-validated activity
+   * (Sections 6-8/38). Absent on most turns by design -- the assistant only
+   * offers when the conversation gave it a genuine reason to.
+   */
+  experience_invitation?: {
+    spec_id: string;
+    template_id: string;
+    title: string;
+    text: string;
+    accept_label: string;
+    decline_label: string;
+    deep_link: string;
+  } | null;
 }
 
 export interface InjectDeclineResponse {

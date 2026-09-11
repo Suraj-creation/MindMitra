@@ -45,15 +45,33 @@ import { api } from "../lib/api";
 import { ambientAudio } from "../lib/ambient-audio";
 import { speakWarmly, cancelEmpathicSpeech } from "../lib/empathic-speech";
 import type { PersonSection, VoiceCapability, PersonSession, RoleSurface } from "../types";
-import { MemoryItem } from "../domain/cognitive-experience";
+import { MemoryItem, MediaAsset, FamiliarPlace, FutureEvent, PersonalGameContextPack } from "../domain/cognitive-experience";
 
 interface PersonAppProps {
   onSelectSurface?: (surface: RoleSurface) => void;
 }
 
+const PERSON_ID = "person:purnima";
+
+const ASSAMESE_WEEKDAYS = ["দেওবাৰ", "সোমবাৰ", "মঙ্গলবাৰ", "বুধবাৰ", "বৃহস্পতিবাৰ", "শুক্রবাৰ", "শনিবাৰ"];
+const ASSAMESE_MONTHS = [
+  "জানুৱাৰী",
+  "ফেব্ৰুৱাৰী",
+  "মার্চ",
+  "এপ্ৰিল",
+  "মে",
+  "জুন",
+  "জুলাই",
+  "আগষ্ট",
+  "ছেপ্টেম্বৰ",
+  "অক্টোবৰ",
+  "নৱেম্বৰ",
+  "ডিচেম্বৰ",
+];
+
 export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
   // Navigation tabs: "day" | "life" | "activity" | "people" | "help"
-  const [activeSection, setActiveSection] = useState<PersonSection | "people">("day");
+  const [activeSection, setActiveSection] = useState<PersonSection>("day");
   const [language, setLanguage] = useState<"as" | "en">("as");
   const [showSaveMemoryModal, setShowSaveMemoryModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -61,6 +79,71 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
   const [showInfraModal, setShowInfraModal] = useState(false);
   const [savedMemories, setSavedMemories] = useState<MemoryItem[]>([]);
   const companion = useCompanion();
+
+  // Deep link into one specific, already-planned experience (Sections 6B/52).
+  // Seeded from the URL so a link is shareable and survives a reload, and also
+  // set directly when the companion's offer is accepted in-session.
+  const [pendingExperienceId, setPendingExperienceId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("experience");
+  });
+
+  // Real backend content for "My Day" (upcoming) and "My Life" (memories/places/media)
+  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [places, setPlaces] = useState<FamiliarPlace[]>([]);
+  const [upcomingEvents, setUpcomingEvents] = useState<FutureEvent[]>([]);
+  const [familiarPeople, setFamiliarPeople] = useState<PersonalGameContextPack["world"]["people"]>([]);
+  const [lifeLoadState, setLifeLoadState] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPersonContent() {
+      setLifeLoadState("loading");
+      try {
+        const [memRes, mediaRes, placesRes, eventsRes, peopleRes] = await Promise.all([
+          fetch(`/v1/memories?person_id=${encodeURIComponent(PERSON_ID)}`),
+          fetch(`/v1/media-assets?person_id=${encodeURIComponent(PERSON_ID)}`),
+          fetch(`/v1/places?person_id=${encodeURIComponent(PERSON_ID)}`),
+          fetch(`/v1/future-events?person_id=${encodeURIComponent(PERSON_ID)}`),
+          fetch(`/v1/people?person_id=${encodeURIComponent(PERSON_ID)}`),
+        ]);
+        if (!memRes.ok || !mediaRes.ok || !placesRes.ok || !eventsRes.ok || !peopleRes.ok) {
+          throw new Error("One or more person-content requests failed");
+        }
+        const [memData, mediaData, placesData, eventsData, peopleData] = await Promise.all([
+          memRes.json(),
+          mediaRes.json(),
+          placesRes.json(),
+          eventsRes.json(),
+          peopleRes.json(),
+        ]);
+        if (cancelled) return;
+        setMemories(memData.items || []);
+        setMediaAssets(mediaData.items || []);
+        setPlaces(placesData.items || []);
+        setUpcomingEvents(
+          (eventsData.items || [])
+            .slice()
+            .sort((a: FutureEvent, b: FutureEvent) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime())
+        );
+        setFamiliarPeople(peopleData.items || []);
+        setLifeLoadState("ready");
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("Failed to load person content:", err);
+          setLifeLoadState("error");
+        }
+      }
+    }
+    loadPersonContent();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const resolveMediaUrl = (mediaRefs: string[] | undefined): string | undefined =>
+    mediaRefs?.length ? mediaAssets.find((m) => m.id === mediaRefs[0])?.url : undefined;
 
   // Sync section with floating companion context
   useEffect(() => {
@@ -76,17 +159,8 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
   const [fluteAudioPlaying, setFluteAudioPlaying] = useState(false);
   const [isSpeakingGuidance, setIsSpeakingGuidance] = useState(false);
 
-  // Companion Chat state
+  // Companion chat draft text (voice transcript & real turns live in the shared CompanionContext)
   const [companionInput, setCompanionInput] = useState("");
-  const [companionTurns, setCompanionTurns] = useState<Array<{ sender: "user" | "companion"; text: string; asText?: string }>>([
-    {
-      sender: "companion",
-      text: "Namaskar, Purnima baideu. You are safe in your Tezpur home. The morning sun is bright, and your daughter Anu is preparing fragrant tea in the kitchen.",
-      asText: "নমস্কাৰ পূৰ্ণিমা বাইদেউ। আপুনি আপোনাৰ তেজপুৰৰ ঘৰত সুৰক্ষিতভাৱে আছে। ৰাতিপুৱাৰ ৰ’দ ওলাইছে, আৰু আপোনাৰ জীয়ৰী অনুৱে পাকঘৰত চাহ বনাইছে।",
-    },
-  ]);
-  const [isListening, setIsListening] = useState(false);
-
   const [session] = useState<PersonSession>({
     personId: "person:purnima",
     displayName: "পূৰ্ণিমা দেৱী",
@@ -96,6 +170,9 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
 
   const [dateLabel, setDateLabel] = useState("");
   const [assameseDateLabel, setAssameseDateLabel] = useState("");
+  const [nowTimeLabel, setNowTimeLabel] = useState(() =>
+    new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  );
   const [routineCompleted, setRoutineCompleted] = useState<Record<string, boolean>>({
     morning_stroll: true,
     tea: true,
@@ -152,12 +229,22 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
       month: "long",
     }).format(now);
     setDateLabel(formattedEn);
-    setAssameseDateLabel("বৃহস্পতিবাৰ, ১০ ছেপ্টেম্বৰ");
+    // Intl's as-IN locale data is unavailable in most JS engines (falls back to
+    // English silently, no exception) -- use a fixed weekday/month table instead.
+    const asWeekday = ASSAMESE_WEEKDAYS[now.getDay()];
+    const asMonth = ASSAMESE_MONTHS[now.getMonth()];
+    setAssameseDateLabel(`${asWeekday}, ${now.getDate()} ${asMonth}`);
 
     return () => {
       ambientAudio.stop();
       cancelEmpathicSpeech();
     };
+  }, []);
+
+  useEffect(() => {
+    const tick = () => setNowTimeLabel(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+    const interval = setInterval(tick, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -180,10 +267,29 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
       return;
     }
     setIsSpeakingGuidance(true);
+
+    const nextEvents = upcomingEvents.slice(0, 2);
+    const eventLineEn = nextEvents.length
+      ? nextEvents
+          .map(
+            (e) =>
+              `At ${new Date(e.scheduled_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, ${e.title.toLowerCase()}${e.person_name ? ` with ${e.person_name}` : ""}`
+          )
+          .join(", and ")
+      : "Today is unhurried, with no fixed plans yet";
+    const eventLineAs = nextEvents.length
+      ? nextEvents
+          .map(
+            (e) =>
+              `${new Date(e.scheduled_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} বজাত ${e.title}${e.person_name ? ` (${e.person_name})` : ""}`
+          )
+          .join(", ")
+      : "আজি কোনো নির্দিষ্ট পৰিকল্পনা নাই, সময়টো শান্তিৰে কটাব পাৰে";
+
     const guidanceText =
       language === "as"
-        ? "নমস্কাৰ পূৰ্ণিমা বাইদেউ। আজি বৃহস্পতিবাৰ। আপুনি আপোনাৰ তেজপুৰৰ ঘৰত শান্তিৰে আছে। চাৰি বজাত অনুৰ সৈতে চাহ খোৱাৰ সময় হ’ব আৰু পাঁচ বজাত গুৱাহাটীৰ পৰা নাতিনী ৰীনাই ফোন কৰিব।"
-        : "Namaskar Purnima baideu. Today is Thursday. You are resting peacefully at your Tezpur home. At 4 PM, you will share warm cardamom tea with Anu, and at 5 PM, granddaughter Rina will call from Guwahati.";
+        ? `নমস্কাৰ পূৰ্ণিমা বাইদেউ। আজি ${assameseDateLabel || dateLabel}। আপুনি আপোনাৰ তেজপুৰৰ ঘৰত শান্তিৰে আছে। ${eventLineAs}।`
+        : `Namaskar Purnima baideu. Today is ${dateLabel}. You are resting peacefully at your Tezpur home. ${eventLineEn}.`;
 
     speakWarmly(guidanceText, {
       rate: 0.88,
@@ -229,7 +335,23 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
       } else if (action.type === "call_contact" && action.target) {
         if (action.target.toLowerCase().includes("rina")) {
           setShowRinaModal(true);
+        } else if (action.phone && action.risk === "low") {
+          // Deliberate exception (crisis escalation): dial immediately, no
+          // confirmation step -- see server.ts's Tele-MANAS action comment.
+          window.location.href = `tel:${action.phone}`;
+        } else if (action.phone) {
+          if (window.confirm(`Call ${action.target} now?`)) {
+            window.location.href = `tel:${action.phone}`;
+          }
         }
+      } else if (action.type === "suggest_experience") {
+        // An offer, not an instruction. Opening the activity surface with the
+        // experience id makes the companion's suggestion land on the exact
+        // activity it planned, rather than a generic page the person then has
+        // to search. It is only ever dispatched when the person taps the offer.
+        const experienceId = (action.payload?.experience_id as string) || null;
+        if (experienceId) setPendingExperienceId(experienceId);
+        setActiveSection("activity");
       } else if (action.type === "start_activity") {
         setActiveSection("activity");
       } else if (action.type === "play_music") {
@@ -241,69 +363,21 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
     });
   }, [companion, fluteAudioPlaying]);
 
-  // Handle Companion turn
+  // Handle Companion turn -- routed through the shared CompanionContext so
+  // typed and spoken input use the exact same backend brain (safety checks included).
   const handleSendTurn = (customPrompt?: string) => {
     const textToSend = customPrompt || companionInput;
     if (!textToSend.trim()) return;
-
-    const newTurns = [
-      ...companionTurns,
-      { sender: "user" as const, text: textToSend },
-    ];
-    setCompanionTurns(newTurns);
     setCompanionInput("");
-
-    let replyEn = "I am here with you, Purnima baideu. Everything is peaceful and well organized for you today.";
-    let replyAs = "মই আপোনাৰ লগত আছো পূৰ্ণিমা বাইদেউ। আজিৰ সকলোখিনি আপোনাৰ বাবে অতি শান্ত আৰু সুন্দৰ হৈ আছে।";
-
-    const lower = textToSend.toLowerCase();
-    if (lower.includes("rina") || lower.includes("ৰীনা") || lower.includes("call")) {
-      replyEn = "Your granddaughter Rina is calling from Guwahati today at 5:00 PM. She is eager to hear your voice and share her university news.";
-      replyAs = "আপোনাৰ নাতিনী ৰীনাই আজি বিয়লি ৫:০০ বজাত গুৱাহাটীৰ পৰা ফোন কৰিব। তাই আপোনাৰ আশীৰ্বাদ ল’বলৈ আৰু মনৰ কথা ক’বলৈ অধীৰ হৈ বাট চাই আছে।";
-    } else if (lower.includes("happening") || lower.includes("today") || lower.includes("দিনলিপি")) {
-      replyEn = "This morning you had your fresh morning tea. At 4:00 PM, warm cardamom tea with fresh rice pitha is prepared with Anu. At 5:00 PM, Rina will call.";
-      replyAs = "আজি পুৱা আপুনি চাহ খাইছে। ৪:০০ বজাত অনুৰ লগত ইলাচী চাহ আৰু পিঠা খোৱা হ’ব, আৰু ৫:০০ বজাত ৰীনাৰ ফোন আহিব।";
-    } else if (lower.includes("flute") || lower.includes("song") || lower.includes("গান") || lower.includes("বাঁহী")) {
-      replyEn = "Let me play a tender Assamese bamboo flute raga from the Brahmaputra valley for you.";
-      replyAs = "আহক, মই আপোনালৈ ব্ৰহ্মপুত্ৰৰ এটি শান্ত আৰু সুমধুৰ বাঁহীৰ সুৰ বজায় দিওঁ।";
-      ambientAudio.playFolkFlute();
-      setFluteAudioPlaying(true);
-    } else if (lower.includes("tezpur") || lower.includes("river") || lower.includes("ঘাট")) {
-      replyEn = "Tezpur is blooming today with green tea terraces. The gentle waters of the Brahmaputra are quiet under the soft sky.";
-      replyAs = "তেজপুৰৰ চাহ বাগিচাৰ সেউজীয়া পাতবোৰ বতাহত হালিছে। ব্ৰহ্মপুত্ৰৰ শান্ত নদীঘাটৰ বতাহজাক অতি স্নিগ্ধ আৰু শীতল।";
-    }
-
-    setTimeout(() => {
-      setCompanionTurns((prev) => [
-        ...prev,
-        { sender: "companion", text: replyEn, asText: replyAs },
-      ]);
-      speakWarmly(language === "as" ? replyAs : replyEn, {
-        rate: 0.88,
-        pitch: 1.05,
-      });
-    }, 600);
+    companion.sendTurn(textToSend);
   };
 
   const handleMicClick = () => {
-    if (isListening) {
-      setIsListening(false);
+    if (companion.isListening) {
+      companion.stopListening();
       return;
     }
-    setIsListening(true);
-    speakWarmly(
-      language === "as"
-        ? "কওক পূৰ্ণিমা বাইদেউ, মই শুনি আছো।"
-        : "Speak gently, Purnima baideu, I am listening.",
-      {
-        onEnd: () => {
-          setTimeout(() => {
-            setIsListening(false);
-            handleSendTurn("What is happening today?");
-          }, 3000);
-        },
-      }
-    );
+    companion.startListening();
   };
 
   const scrollToCompanion = () => {
@@ -558,7 +632,7 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
                   Namaskar, Purnima baideu. You are peacefully home.
                 </p>
                 <p className="text-xs sm:text-sm text-white/80 max-w-2xl font-sans pt-1 leading-relaxed">
-                  10:30 am · Thursday, 10 September (বৃহস্পতিবাৰ). The air carries the scent of fresh tea leaves and rain over the river.
+                  {nowTimeLabel} · {dateLabel} ({assameseDateLabel}). The air carries the scent of fresh tea leaves and rain over the river.
                 </p>
               </div>
 
@@ -643,117 +717,95 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
             </div>
 
             {/* 3 Timeline Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Card 1: 4:00 PM Tea with Anu */}
-              <div className="bg-[#f8f3ea] border border-[#c2c8c1]/60 rounded-3xl p-6 flex flex-col justify-between space-y-4 hover:border-[#1a3826]/40 transition shadow-xs">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#904d00] bg-[#ffdcc3] px-2.5 py-1 rounded-lg">
-                      4:00 PM
-                    </span>
-                    <div className="w-10 h-10 rounded-2xl bg-[#ffdcc3] text-[#904d00] flex items-center justify-center">
-                      <Coffee size={20} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="text-lg font-serif font-bold text-[#1d1c16]">
-                      Cardamom Tea with Anu
-                    </h3>
-                    <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
-                      Warm ginger-elaichi tea & homemade fresh rice pitha on the back veranda.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-[#c2c8c1]/40 flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-[#1a3826] bg-[#eaf0e4] px-2.5 py-1 rounded-md">
-                    Prepared gently at 3:45 PM
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setRoutineCompleted((s) => ({ ...s, afternoon_tea: !s.afternoon_tea }))}
-                    className="text-xs font-semibold text-[#424843] hover:text-[#1a3826] flex items-center gap-1"
-                  >
-                    <CheckCircle2
-                      size={18}
-                      className={routineCompleted.afternoon_tea ? "text-[#1a3826] fill-[#1a3826]/20" : "text-[#c2c8c1]"}
-                    />
-                    <span>{routineCompleted.afternoon_tea ? "Ready" : "Mark"}</span>
-                  </button>
-                </div>
+            {lifeLoadState === "loading" && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6" aria-busy="true" aria-label="Loading today's schedule">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="bg-[#f8f3ea] border border-[#c2c8c1]/60 rounded-3xl p-6 h-40 animate-pulse" />
+                ))}
               </div>
+            )}
 
-              {/* Card 2: 5:00 PM Rina calls from Guwahati */}
-              <div className="bg-[#f8f3ea] border border-[#c2c8c1]/60 rounded-3xl p-6 flex flex-col justify-between space-y-4 hover:border-[#1a3826]/40 transition shadow-xs">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#7e22ce] bg-[#f3e8ff] px-2.5 py-1 rounded-lg">
-                      5:00 PM
-                    </span>
-                    <div className="w-10 h-10 rounded-2xl bg-[#f3e8ff] text-[#7e22ce] flex items-center justify-center">
-                      <Phone size={20} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="text-lg font-serif font-bold text-[#1d1c16]">
-                      Rina calls from Guwahati
-                    </h3>
-                    <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
-                      Your granddaughter will dial in to share evening stories and laugh together.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-[#c2c8c1]/40">
-                  <button
-                    type="button"
-                    onClick={() => setShowRinaModal(true)}
-                    className="w-full py-2.5 rounded-xl bg-[#1a3826] hover:bg-[#2d5a3f] text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-xs"
-                  >
-                    <span>See Rina's Photo or Call</span>
-                    <ArrowRight size={14} />
-                  </button>
-                </div>
+            {lifeLoadState === "error" && (
+              <div className="bg-[#fef3c7] border border-[#fbbf24]/60 rounded-3xl p-6 text-sm text-[#854d0e]">
+                We couldn't reach the schedule right now. Please check your connection, or ask a family member for help.
               </div>
+            )}
 
-              {/* Card 3: 7:30 PM Evening Prayer & Light Meal */}
-              <div className="bg-[#f8f3ea] border border-[#c2c8c1]/60 rounded-3xl p-6 flex flex-col justify-between space-y-4 hover:border-[#1a3826]/40 transition shadow-xs">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#854d0e] bg-[#fef08a] px-2.5 py-1 rounded-lg">
-                      7:30 PM
-                    </span>
-                    <div className="w-10 h-10 rounded-2xl bg-[#fef08a] text-[#854d0e] flex items-center justify-center">
-                      <Flame size={20} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="text-lg font-serif font-bold text-[#1d1c16]">
-                      Evening Prayer & Light Meal
-                    </h3>
-                    <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
-                      Earthen oil lamp (diya) lighting at the Gosai-Ghar, followed by soft khichdi.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-[#c2c8c1]/40 flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-[#424843]">
-                    Soft flute melodies will play
-                  </span>
-                  <button
-                    type="button"
-                    onClick={toggleFluteSound}
-                    className="text-xs font-semibold text-[#1a3826] underline hover:text-[#2d5a3f]"
-                  >
-                    {fluteAudioPlaying ? "Pause Flute" : "Play Melodies"}
-                  </button>
-                </div>
+            {lifeLoadState === "ready" && upcomingEvents.length === 0 && (
+              <div className="bg-[#f8f3ea] border border-[#c2c8c1]/60 rounded-3xl p-8 text-center text-sm text-[#424843]">
+                Nothing planned yet today. Enjoy a quiet, unhurried moment.
               </div>
-            </div>
+            )}
+
+            {lifeLoadState === "ready" && upcomingEvents.length > 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {upcomingEvents.slice(0, 3).map((event) => {
+                  const isCall = event.event_type === "family_visit" || /call/i.test(event.title);
+                  const Icon = isCall ? Phone : event.event_type === "routine_tea" ? Coffee : Flame;
+                  const timeLabel = new Date(event.scheduled_at).toLocaleTimeString([], {
+                    hour: "numeric",
+                    minute: "2-digit",
+                  });
+                  const done = !!routineCompleted[event.id];
+                  return (
+                    <div
+                      key={event.id}
+                      className="bg-[#f8f3ea] border border-[#c2c8c1]/60 rounded-3xl p-6 flex flex-col justify-between space-y-4 hover:border-[#1a3826]/40 transition shadow-xs"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[#904d00] bg-[#ffdcc3] px-2.5 py-1 rounded-lg">
+                            {timeLabel}
+                          </span>
+                          <div className="w-10 h-10 rounded-2xl bg-[#ffdcc3] text-[#904d00] flex items-center justify-center">
+                            <Icon size={20} />
+                          </div>
+                        </div>
+
+                        <div>
+                          <h3 className="text-lg font-serif font-bold text-[#1d1c16]">{event.title}</h3>
+                          {(event.location || event.description) && (
+                            <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
+                              {event.description || `At ${event.location}`}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-[#c2c8c1]/40 flex items-center justify-between">
+                        {event.person_name?.toLowerCase().includes("rina") ? (
+                          <button
+                            type="button"
+                            onClick={() => setShowRinaModal(true)}
+                            className="w-full py-2.5 rounded-xl bg-[#1a3826] hover:bg-[#2d5a3f] text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-xs"
+                          >
+                            <span>See Rina's Photo or Call</span>
+                            <ArrowRight size={14} />
+                          </button>
+                        ) : (
+                          <>
+                            <span className="text-[11px] font-medium text-[#1a3826] bg-[#eaf0e4] px-2.5 py-1 rounded-md">
+                              {event.person_name ? `With ${event.person_name}` : "Today"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setRoutineCompleted((s) => ({ ...s, [event.id]: !s[event.id] }))}
+                              className="text-xs font-semibold text-[#424843] hover:text-[#1a3826] flex items-center gap-1"
+                            >
+                              <CheckCircle2
+                                size={18}
+                                className={done ? "text-[#1a3826] fill-[#1a3826]/20" : "text-[#c2c8c1]"}
+                              />
+                              <span>{done ? "Ready" : "Mark"}</span>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
           {/* ── 2.5 SECTION: MEDICATION REMINDERS & SCHEDULE SYNC (ঔষধৰ সময়সূচী) ── */}
@@ -954,22 +1006,22 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
               </div>
 
               {/* Conversation Display */}
-              <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-                {companionTurns.map((turn, idx) => (
+              <div className="space-y-3 max-h-80 overflow-y-auto pr-1" aria-live="polite">
+                {companion.turns.map((turn) => (
                   <div
-                    key={idx}
+                    key={turn.id}
                     className={`p-4 rounded-2xl text-sm leading-relaxed ${
-                      turn.sender === "user"
+                      turn.role === "user"
                         ? "bg-[#1a3826] text-white ml-8 sm:ml-16 font-medium"
                         : "bg-white border border-[#c2c8c1]/60 text-[#1d1c16] mr-8 sm:mr-16 shadow-2xs"
                     }`}
                   >
-                    {turn.sender === "companion" && turn.asText && (
+                    {turn.role === "assistant" && turn.asText && turn.asText !== turn.text && (
                       <p className="font-serif font-bold text-base text-[#1a3826] mb-1">
                         {turn.asText}
                       </p>
                     )}
-                    <p className={turn.sender === "companion" ? "text-xs text-[#424843]" : ""}>
+                    <p className={turn.role === "assistant" ? "text-xs text-[#424843]" : ""}>
                       {turn.text}
                     </p>
                   </div>
@@ -1006,22 +1058,25 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
                   type="button"
                   onClick={handleMicClick}
                   className={`w-full sm:w-auto px-6 py-3.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2.5 transition shadow-md ${
-                    isListening
+                    companion.isListening
                       ? "bg-red-700 text-white animate-pulse"
                       : "bg-[#1a3826] hover:bg-[#2d5a3f] text-white"
                   }`}
                 >
                   <Mic size={20} />
-                  <span>{isListening ? "Listening with care..." : "Tap to Speak gently (কওক)"}</span>
+                  <span>{companion.isListening ? "Listening with care..." : "Tap to Speak gently (কওক)"}</span>
                 </button>
 
                 <div className="w-full flex items-center gap-2">
                   <input
                     type="text"
+                    id="companion-chat-input"
+                    name="companion-chat-input"
                     value={companionInput}
                     onChange={(e) => setCompanionInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleSendTurn()}
                     placeholder="Type a gentle question or memory..."
+                    aria-label="Type a gentle question or memory"
                     className="flex-1 bg-white border border-[#c2c8c1] rounded-2xl px-4 py-3 text-sm text-[#1d1c16] placeholder-[#727972] focus:outline-none focus:ring-2 focus:ring-[#1a3826]/40"
                   />
                   <button
@@ -1061,8 +1116,22 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
             </button>
           </div>
 
-          {/* The Complete CognitiveExperienceSpace with all 8 games & engines preserved */}
-          <CognitiveExperienceSpace onBackToDay={() => setActiveSection("day")} />
+          {/* The dynamic experience region, with all existing engines preserved
+              beneath it as the always-available layer. */}
+          <CognitiveExperienceSpace
+            onBackToDay={() => setActiveSection("day")}
+            initialExperienceId={pendingExperienceId}
+            onExperienceConsumed={() => {
+              setPendingExperienceId(null);
+              // Drop the query parameter so going back and forward doesn't
+              // re-open a finished activity (Section 64).
+              if (typeof window !== "undefined" && window.location.search.includes("experience=")) {
+                const url = new URL(window.location.href);
+                url.searchParams.delete("experience");
+                window.history.replaceState({}, "", url.pathname + url.search);
+              }
+            }}
+          />
 
           {/* Gentle Calming Breathing Exercise (from original PersonApp) */}
           <div className="bg-[#f8f3ea] border border-[#c2c8c1] p-6 sm:p-8 rounded-3xl shadow-sm">
@@ -1134,8 +1203,8 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {savedMemories.map((mem) => (
                   <div key={mem.id} className="bg-white p-4 rounded-2xl border border-[#c2c8c1]/60 flex items-center gap-3.5 shadow-2xs">
-                    {mem.media_refs?.[0] ? (
-                      <img src={mem.media_refs[0]} alt={mem.title} className="w-14 h-14 rounded-xl object-cover" />
+                    {resolveMediaUrl(mem.media_refs) ? (
+                      <img src={resolveMediaUrl(mem.media_refs)} alt={mem.title} className="w-14 h-14 rounded-xl object-cover" />
                     ) : (
                       <div className="w-14 h-14 rounded-xl bg-[#ffdcc3] flex items-center justify-center text-[#904d00]">
                         <Heart size={22} />
@@ -1154,76 +1223,62 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
             </div>
           )}
 
-          {/* Visual Memory Vignettes */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Tezpur Tea Garden */}
-            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl overflow-hidden shadow-xs hover:shadow-md transition">
-              <img
-                src="/assets/images/assam_tea_garden_1788977277508.jpg"
-                alt="Assam rolling tea gardens"
-                className="w-full h-56 object-cover"
-              />
-              <div className="p-5">
-                <h3 className="font-serif font-bold text-xl text-[#1d1c16]">
-                  The Green Hills of Tezpur
-                </h3>
-                <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
-                  You used to walk near the tea estate in the cool mornings with your teacher friends. Do you remember the fresh fragrance of young tea leaves?
-                </p>
-              </div>
+          {/* Memories & Places (real data from the person's verified life story) */}
+          {lifeLoadState === "loading" && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6" aria-busy="true" aria-label="Loading memories">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl h-72 animate-pulse" />
+              ))}
             </div>
+          )}
 
-            {/* Brahmaputra River */}
-            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl overflow-hidden shadow-xs hover:shadow-md transition">
-              <img
-                src="/assets/images/brahmaputra_river_1788977296883.jpg"
-                alt="Sunset over Brahmaputra river"
-                className="w-full h-56 object-cover"
-              />
-              <div className="p-5">
-                <h3 className="font-serif font-bold text-xl text-[#1d1c16]">
-                  Evening on the Brahmaputra
-                </h3>
-                <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
-                  The gentle ferry boats gliding across the golden water at twilight. A peaceful sight you always watched together from the river ghat.
-                </p>
-              </div>
+          {lifeLoadState === "error" && (
+            <div className="bg-[#fef3c7] border border-[#fbbf24]/60 rounded-3xl p-6 text-sm text-[#854d0e]">
+              We couldn't reach your memories right now. Please check your connection, or ask a family member for help.
             </div>
+          )}
 
-            {/* Teaching Career Days */}
-            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl overflow-hidden shadow-xs hover:shadow-md transition">
-              <img
-                src="/assets/images/vintage_teacher_memory_1789020507713.jpg"
-                alt="Teaching days"
-                className="w-full h-56 object-cover"
-              />
-              <div className="p-5">
-                <h3 className="font-serif font-bold text-xl text-[#1d1c16]">
-                  Tezpur Girls' School (১৯৮২)
-                </h3>
-                <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
-                  Thirty years of teaching literature and Assamese poetry. Hundreds of students still hold your blessings in their hearts.
-                </p>
-              </div>
+          {lifeLoadState === "ready" && memories.length === 0 && places.length === 0 && (
+            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl p-10 text-center text-sm text-[#424843]">
+              No memories saved yet. Tap "Save Memory" above to add your first cherished moment.
             </div>
+          )}
 
-            {/* 1968 Wedding */}
-            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl overflow-hidden shadow-xs hover:shadow-md transition">
-              <img
-                src="/assets/images/vintage_assamese_wedding_1789020439671.jpg"
-                alt="Wedding ceremony"
-                className="w-full h-56 object-cover"
-              />
-              <div className="p-5">
-                <h3 className="font-serif font-bold text-xl text-[#1d1c16]">
-                  Wedding in Jorhat (১৯৬৮)
-                </h3>
-                <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">
-                  Dressed in traditional golden Muga silk mekhela sador, surrounded by the fragrance of fresh jasmine and courtyard shehnai melodies.
-                </p>
-              </div>
+          {lifeLoadState === "ready" && (memories.length > 0 || places.length > 0) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {memories.map((mem) => {
+                const img = resolveMediaUrl(mem.media_refs);
+                return (
+                  <div key={mem.id} className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl overflow-hidden shadow-xs hover:shadow-md transition">
+                    {img && <img src={img} alt={mem.assamese_title || mem.title} className="w-full h-56 object-cover" />}
+                    <div className="p-5">
+                      <h3 className="font-serif font-bold text-xl text-[#1d1c16]">{mem.title}</h3>
+                      {mem.approximate_period && (
+                        <p className="text-[11px] font-semibold text-[#904d00] mt-0.5">{mem.approximate_period}</p>
+                      )}
+                      <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">{mem.description}</p>
+                      <span className="inline-block mt-2 text-[10px] font-semibold text-[#1a3826]">
+                        {mem.verification_status === "unverified" ? "Pending family verification" : "Family verified"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {places.map((place) => {
+                const img = resolveMediaUrl(place.media_refs);
+                return (
+                  <div key={place.id} className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl overflow-hidden shadow-xs hover:shadow-md transition">
+                    {img && <img src={img} alt={place.assamese_name || place.name} className="w-full h-56 object-cover" />}
+                    <div className="p-5">
+                      <h3 className="font-serif font-bold text-xl text-[#1d1c16]">{place.name}</h3>
+                      <p className="text-xs text-[#424843] mt-1.5 leading-relaxed">{place.description || place.significance}</p>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -1244,102 +1299,85 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Granddaughter Rina */}
-            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl p-6 flex flex-col justify-between space-y-4 shadow-xs">
-              <div className="space-y-3">
-                <div className="w-20 h-20 rounded-2xl overflow-hidden border-2 border-[#1a3826]/30">
-                  <img
-                    src="/assets/images/rina_granddaughter_portrait_1789020459100.jpg"
-                    alt="Rina"
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-                <div>
-                  <span className="text-[11px] font-bold uppercase text-[#7e22ce] bg-[#f3e8ff] px-2 py-0.5 rounded-md">
-                    Granddaughter · নাতিনী
-                  </span>
-                  <h3 className="text-xl font-serif font-bold text-[#1d1c16] mt-1">
-                    Rina Borah
-                  </h3>
-                  <p className="text-xs text-[#424843] mt-1 leading-relaxed">
-                    Working at Guwahati University. Calls every afternoon at 5:00 PM.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setShowRinaModal(true)}
-                className="w-full py-2.5 rounded-xl bg-[#1a3826] hover:bg-[#2d5a3f] text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition"
-              >
-                <PhoneCall size={14} />
-                <span>Call Rina</span>
-              </button>
+          {lifeLoadState === "loading" && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6" aria-busy="true" aria-label="Loading your family and care team">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl h-56 animate-pulse" />
+              ))}
             </div>
+          )}
 
-            {/* Daughter Anu */}
-            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl p-6 flex flex-col justify-between space-y-4 shadow-xs">
-              <div className="space-y-3">
-                <div className="w-20 h-20 rounded-2xl bg-[#ffdcc3] text-[#904d00] flex items-center justify-center text-3xl font-serif font-bold">
-                  অনু
-                </div>
-                <div>
-                  <span className="text-[11px] font-bold uppercase text-[#904d00] bg-[#ffdcc3] px-2 py-0.5 rounded-md">
-                    Daughter & Caregiver · জীয়ৰী
-                  </span>
-                  <h3 className="text-xl font-serif font-bold text-[#1d1c16] mt-1">
-                    Anu Devi
-                  </h3>
-                  <p className="text-xs text-[#424843] mt-1 leading-relaxed">
-                    Living with you in Tezpur. Currently in the kitchen preparing afternoon refreshments.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  speakWarmly("Calling Anu in the veranda kitchen. She will come right away.");
-                }}
-                className="w-full py-2.5 rounded-xl bg-[#1a3826] hover:bg-[#2d5a3f] text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition"
-              >
-                <PhoneCall size={14} />
-                <span>Call Anu in Kitchen</span>
-              </button>
+          {lifeLoadState === "error" && (
+            <div className="bg-[#fef3c7] border border-[#fbbf24]/60 rounded-3xl p-6 text-sm text-[#854d0e]">
+              We couldn't reach your family circle right now. Please check your connection, or ask a family member for help.
             </div>
+          )}
 
-            {/* ASHA Health Worker Meena */}
-            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl p-6 flex flex-col justify-between space-y-4 shadow-xs">
-              <div className="space-y-3">
-                <div className="w-20 h-20 rounded-2xl bg-[#e0f2fe] text-[#0369a1] flex items-center justify-center text-3xl font-serif font-bold">
-                  মীনা
-                </div>
-                <div>
-                  <span className="text-[11px] font-bold uppercase text-[#0369a1] bg-[#e0f2fe] px-2 py-0.5 rounded-md">
-                    ASHA Community Worker · আশা কর্মী
-                  </span>
-                  <h3 className="text-xl font-serif font-bold text-[#1d1c16] mt-1">
-                    Meena Saikia
-                  </h3>
-                  <p className="text-xs text-[#424843] mt-1 leading-relaxed">
-                    Local Kamrup / Tezpur healthcare support worker. Visits every Tuesday for blood pressure and wellness checks.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  speakWarmly("Connecting to ASHA worker Meena Saikia.");
-                }}
-                className="w-full py-2.5 rounded-xl bg-[#0369a1] hover:bg-[#025684] text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition"
-              >
-                <PhoneCall size={14} />
-                <span>Call Meena (ASHA)</span>
-              </button>
+          {lifeLoadState === "ready" && familiarPeople.length === 0 && (
+            <div className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl p-10 text-center text-sm text-[#424843]">
+              No one has been added to your circle yet.
             </div>
-          </div>
+          )}
+
+          {lifeLoadState === "ready" && familiarPeople.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {familiarPeople.map((person) => {
+                const isRina = person.name.toLowerCase().includes("rina");
+                const photoUrl = isRina ? "/assets/images/rina_granddaughter_portrait_1789020459100.jpg" : undefined;
+                const initial = person.name.charAt(0);
+                const isAsha = /asha|health/i.test(person.relationship);
+                const accent = isAsha ? "#0369a1" : "#904d00";
+                const relationshipLabel = person.relationship.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+                return (
+                  <div key={person.id} className="bg-[#f8f3ea] border border-[#c2c8c1] rounded-3xl p-6 flex flex-col justify-between space-y-4 shadow-xs">
+                    <div className="space-y-3">
+                      {photoUrl ? (
+                        <div className="w-20 h-20 rounded-2xl overflow-hidden border-2 border-[#1a3826]/30">
+                          <img src={photoUrl} alt={person.name} className="w-full h-full object-cover" />
+                        </div>
+                      ) : (
+                        <div
+                          className="w-20 h-20 rounded-2xl flex items-center justify-center text-3xl font-serif font-bold"
+                          style={{ backgroundColor: `${accent}1a`, color: accent }}
+                        >
+                          {initial}
+                        </div>
+                      )}
+                      <div>
+                        <span
+                          className="text-[11px] font-bold uppercase px-2 py-0.5 rounded-md"
+                          style={{ backgroundColor: `${accent}1a`, color: accent }}
+                        >
+                          {relationshipLabel}
+                        </span>
+                        <h3 className="text-xl font-serif font-bold text-[#1d1c16] mt-1">{person.name}</h3>
+                        {!person.verified && (
+                          <p className="text-[11px] text-[#904d00] mt-1">Pending family verification</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isRina) {
+                          setShowRinaModal(true);
+                          return;
+                        }
+                        speakWarmly(`Calling ${person.name}. They will be notified right away.`);
+                        if (person.phone) window.location.href = `tel:${person.phone}`;
+                      }}
+                      className="w-full py-2.5 rounded-xl text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+                      style={{ backgroundColor: accent }}
+                    >
+                      <PhoneCall size={14} />
+                      <span>Call {person.name.split(" ")[0]}</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

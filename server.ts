@@ -37,6 +37,11 @@ import {
 import { checkDbHealth, getDbPool, queryDb } from "./src/db/neon";
 import { checkB2Health, getPresignedUploadUrl, getPresignedDownloadUrl } from "./src/storage/b2";
 import { runSchemaMigration } from "./src/db/migrate";
+import * as personDataRepo from "./src/db/person-data-repository";
+import { seedPersonasIfEmpty } from "./src/db/seed-personas";
+import { buildPersonExperienceProjection, buildEvidencePack, checkGrounding, planRetrieval } from "./src/intelligence/context/personal-context-engine";
+import { classifyIntent } from "./src/intelligence/context/intent-classifier";
+import { buildDeterministicAnswer } from "./src/intelligence/context/companion-responder";
 import {
   getDbMedications,
   upsertDbMedication,
@@ -79,6 +84,13 @@ import {
   searchClinicalQuery,
   CLINICAL_EXAMPLE_QUERIES,
 } from "./src/db/clinical-db";
+import { planExperience } from "./src/intelligence/experience/planner";
+import { decideInvitation, invitationCopy } from "./src/intelligence/experience/invitation";
+import * as experienceRepo from "./src/db/experience-repository";
+import type {
+  ExperienceEventInput,
+  ExperienceTemplateId,
+} from "./src/intelligence/experience/types";
 
 // ── Google GenAI Client (Lazy Init with User-Agent header) ───────────────────
 let aiClient: GoogleGenAI | null = null;
@@ -100,35 +112,87 @@ function getGenAI(): GoogleGenAI | null {
   return aiClient;
 }
 
+// The system instruction deliberately contains NO facts about the person.
+//
+// It used to hardcode their family, their tea time, their garden and "Rina
+// calls every Tuesday and Saturday at 5:00 PM" -- a second, invisible source
+// of "personal truth" sitting beside the retrieved evidence pack. The model
+// would answer confidently from it whether or not any of it was still true,
+// and no grounding check could catch that, because the facts looked supported.
+// Everything about the person now arrives per-turn in the evidence pack.
 const COMPANION_SYSTEM_INSTRUCTION = `
-You are MindMitra, speaking in the voice of a very warm, deeply empathic, affectionate young female companion (like a loving daughter or granddaughter sitting close beside her on the veranda). You address Purnima as "Purnima baideu" or "Aitâ".
+You are MindMitra, a calm, warm companion speaking with an older adult in their own home. You are a voice interface to what is actually recorded about this person's life -- not a storyteller.
 
-CORE ATTITUDE & EMPATHIC TONE:
-1. DEEP EMPATHY & EMOTIONAL REASSURANCE: Speak with tender, soothing gentleness, emotional warmth, and unhurried calm. If she feels anxious, confused, lonely, or asks where she is, validate her feelings tenderly and bring immediate peaceful clarity.
-2. DIGNITY & RESPECT: Never treat Purnima as a patient. NEVER mention dementia, memory loss, cognitive decline, or test scores.
-3. REPETITION GRACE: If Purnima asks the same question multiple times, respond EVERY single time with the same fresh sweetness, warmth, and complete patience. Never say "as I said earlier" or "remember?".
-4. CONCISE & SPOKEN-FRIENDLY: Keep responses to 1 to 2 comforting spoken sentences. Speak naturally, as if talking softly in the same room.
-5. PERSONAL WORLD MODEL GROUNDING:
-   - She is safe in her ancestral home in Tezpur, Assam, near the peaceful Brahmaputra river.
-   - Her daughter Anu is her primary caregiver and is in the house right now.
-   - Her granddaughter Rina is in Guwahati, calls every Tuesday and Saturday at 5:00 PM, and loves Purnima's til pitha.
-   - Her son Bikash is in Bengaluru and visits during festivals.
-   - Evening cardamom tea with Anu is at 4:00 PM.
-   - Garden has golden marigolds (Gendhu phul), sweet Nahor blossoms, and holy tulsi.
-   - Traditional music: Assamese bamboo flute ragas, Bihu folk tunes, Goalpariya folk songs.
-6. HEALTH & CRISIS BOUNDARIES:
-   - NEVER give medical advice, adjust medications, or diagnose.
-   - If severe distress is detected, remind her gently that National Tele-MANAS toll-free helpline is available at 14416.
-7. ACTION SUGGESTIONS:
-   If Purnima asks to see family photos, call someone, weave flowers, make tea, or look at reminders, you may append an action tag at the very end of your response:
-   - [ACTION:call_anu] -> when she wants to talk to or find Anu
-   - [ACTION:call_rina] -> when she wants to hear from or call granddaughter Rina
-   - [ACTION:navigate_life] -> when she wants to see family photos or reminisce
-   - [ACTION:navigate_activity] -> when she wants to do an activity (flower garland, afternoon tea)
-   - [ACTION:navigate_people] -> when she wants to see her family contact list
-   - [ACTION:navigate_help] -> when she needs immediate reassurance or guidance
-   - [ACTION:play_flute] -> when she asks for peaceful flute music or a song
+THE ONE RULE THAT OVERRIDES EVERY OTHER RULE:
+You may state ONLY what appears in the "KNOWN FACTS" list supplied with each message. You must never invent, guess, embellish or infer a person, place, event, time, activity, plan, memory or routine that is not in that list. If the facts do not answer the question, say plainly that you don't have it recorded. "I don't know" is a correct and welcome answer. An invented answer is a serious failure, even a beautiful one.
+
+ANSWER THE QUESTION FIRST:
+- Lead with the actual answer, in plain words. Warmth comes after, and only if it adds something.
+- Never open with a metaphor, an image, or a soothing preamble.
+- Do not describe activities, journeys, walks, paths, weather or scenery unless they appear in the known facts.
+- Do not pad with motivational or therapeutic filler.
+
+TONE:
+- Warm, patient, brief, familiar, respectful, clear. Speak as if in the same room.
+- 1-2 short spoken sentences unless listing the day's plan, which may run to three.
+- Use the honorific supplied in the context; never invent a name or nickname.
+- Dignity: never treat the person as a patient, and never mention dementia, memory loss, cognitive decline or test scores.
+- Repetition grace: if the same question is asked again, answer it again, freshly and patiently. Never say "as I said earlier" or "remember?".
+
+HEALTH & CRISIS BOUNDARIES:
+- Never give medical advice, adjust medication, or diagnose.
+- On severe distress, gently mention the National Tele-MANAS helpline, 14416.
+
+ACTION SUGGESTIONS:
+You may append at most one action tag at the very end of your response, only when the person is clearly asking for it AND the target appears in the known facts:
+- [ACTION:call_anu] / [ACTION:call_rina] -> to call that person
+- [ACTION:navigate_life] -> family photos and reminiscence
+- [ACTION:navigate_activity] -> begin a gentle activity
+- [ACTION:navigate_people] -> the list of their people
+- [ACTION:navigate_help] -> help and support
+- [ACTION:play_flute] -> peaceful music
 `;
+
+/**
+ * How the person is addressed and which timezone their day is measured in.
+ *
+ * ponytail: a two-row lookup, not a table. There is no `persons` table in the
+ * schema -- identity was previously hardcoded inline in the route handler and
+ * in the system prompt. Consolidating it here removes the duplication and the
+ * prompt-injected "truth" without inventing a migration; promote to a real
+ * table when a third persona or self-service onboarding arrives.
+ */
+const PERSON_IDENTITY: Record<
+  string,
+  { displayName: string; honorific: string; culture: string; timeZone: string; actorId: string }
+> = {
+  "person:purnima": {
+    displayName: "Purnima",
+    honorific: "Purnima baideu",
+    culture: "Assamese (Tezpur)",
+    timeZone: "Asia/Kolkata",
+    actorId: "actor:purnima",
+  },
+  "person:nekombo": {
+    displayName: "Nekombo",
+    honorific: "Nekombo",
+    culture: "Ao Naga (Mokokchung)",
+    timeZone: "Asia/Kolkata",
+    actorId: "actor:nekombo",
+  },
+};
+
+function identityFor(personId: string) {
+  return (
+    PERSON_IDENTITY[personId] || {
+      displayName: "friend",
+      honorific: "",
+      culture: "",
+      timeZone: "Asia/Kolkata",
+      actorId: `actor:${personId.replace(/^person:/, "")}`,
+    }
+  );
+}
 
 // ── In-Memory State for Demo ────────────────────────────────────────────────
 let anuConsentGranted = true;
@@ -396,6 +460,10 @@ async function startServer() {
           label: "Call Tele-MANAS (14416)",
           target: "Tele-MANAS",
           phone: "14416",
+          // Deliberate exception to call_contact's general "requires_confirmation"
+          // rule (Prompt 4 §21): a crisis escalation must never be gated behind
+          // an extra confirmation step.
+          risk: "low",
         },
         voice_meta: {
           persona: "empathic_daughter",
@@ -412,75 +480,110 @@ async function startServer() {
       });
     }
 
-    // 2. Resolve Context & Provenance Sources
-    const sources: Array<{ fact_id?: string; source_type?: string; verified?: boolean; text?: string }> = [
-      {
-        fact_id: "fact:family_assam",
-        source_type: "verified_family_record",
-        verified: true,
-        text: "Purnima's ancestral home in Tezpur, Assam near Brahmaputra with daughter Anu.",
-      },
-      {
-        fact_id: "fact:granddaughter_rina",
-        source_type: "family_event",
-        verified: true,
-        text: "Granddaughter Rina calling from Guwahati at 5:00 PM.",
-      },
-      {
-        fact_id: "fact:tea_routine",
-        source_type: "daily_routine",
-        verified: true,
-        text: "Afternoon cardamom tea with fresh ginger prepared with Anu at 4:00 PM.",
-      },
-    ];
+    const personId = req.params.personId || "person:purnima";
+
+    // 2. Bounded intent classification FIRST -- it needs no DB access, and its
+    // result drives the retrieval plan below (Prompt 4 §2-5: "the retrieval
+    // planner must dynamically determine what data is required" / "do not
+    // retrieve everything"). Same words mean different things depending on
+    // page/active game/visible entity.
+    const classified = classifyIntent(text, {
+      page,
+      activeGame: active_game,
+      visibleEntity: visible_entity,
+    });
+
+    // 2b. Personal Context Engine: assemble a real, query-shaped projection
+    // from Neon (Prompt 2's repository) instead of hardcoded "Tuesday 10:30
+    // AM, Rina calls at 5pm" facts -- narrowed to what this intent actually
+    // needs. This is the single EvidencePack the response layer (both the
+    // LLM prompt and the deterministic fallback below) is allowed to draw on
+    // -- nothing else may be presented as a "source".
+    const identity = identityFor(personId);
+    // The whole ClassifiedIntent drives the plan, not just the intent class:
+    // a GENERAL-mode question skips personal retrieval entirely, and the
+    // temporal scope selects which calendar day gets loaded.
+    const retrievalPlan = planRetrieval(classified);
+    const projection = await buildPersonExperienceProjection(personId, {
+      page,
+      displayName: identity.displayName,
+      honorific: identity.honorific,
+      language,
+      culture: identity.culture,
+      plan: retrievalPlan,
+      timeZone: identity.timeZone,
+      scope: classified.temporal_scope,
+    }).catch(() => null);
+    const evidencePack = projection ? buildEvidencePack(projection) : { facts: [], generated_at: new Date().toISOString(), consent_ok: true };
+    const sources: Array<{ fact_id?: string; source_type?: string; verified?: boolean; text?: string }> = evidencePack.facts.map((f) => ({
+      fact_id: f.fact_id,
+      source_type: f.source_type,
+      verified: f.verified,
+      text: f.text,
+    }));
+
+    if (projection) {
+      personDataRepo
+        .logFirewallAccess({
+          person_id: personId,
+          actor_id: identity.actorId,
+          actor_role: "person",
+          purpose: "personalisation",
+          requested_entity_type: "person_experience_projection",
+          decision: "ALLOW",
+          policy_reason: `Person requesting their own companion context (intent=${classified.intent}).`,
+          filtered_count: evidencePack.facts.length,
+        })
+        .catch(() => {});
+    }
+
+    // 2c. Repetition-aware interaction (Prompt 4 §9): detect a repeat without
+    // ever narrating it ("you already asked that") -- the deterministic path
+    // already answers fresh from current evidence every time by construction,
+    // so the only thing needed here is steering the LLM path the same way.
+    const recentPersistedTurns = await personDataRepo.getRecentCompanionTurns(personId, 6).catch(() => []);
+    const isRepeat = personDataRepo.isLikelyRepeat(text, recentPersistedTurns);
 
     // Build rich context summary based on current page and visible entities
-    let pageContextSummary = `Surface: ${surface}, Page: ${page}`;
-    if (page === "day") {
-      pageContextSummary += " (Viewing Day Overview: Morning Puja, Veranda card, upcoming 4 PM Cardamom Tea, 5 PM call with Rina).";
-    } else if (page === "life") {
-      pageContextSummary += " (Viewing My Life Album: Rongali Bihu festival, Brahmaputra riverbank walks, Tezpur memories, Bamboo flute melodies).";
-    } else if (page === "activity") {
-      pageContextSummary += " (Viewing Cognitive Activities & Sensory Calming space).";
-    } else if (page === "people") {
-      pageContextSummary += " (Viewing Loved People: Daughter Anu, Granddaughter Rina, Son Bikash, ASHA worker Meena).";
-    } else if (page === "help") {
-      pageContextSummary += " (Viewing Help & Reassurance: Home location, Emergency contacts, Tele-MANAS 14416).";
-    }
+    let pageContextSummary = `Surface: ${surface}, Page: ${page}. Intent classified as ${classified.intent} (${classified.matched_rule}).${
+      isRepeat ? " The person is asking this again -- answer calmly with current information, never mention that they already asked." : ""
+    }`;
 
     // Pronoun & Entity Resolution
     let entityFocusText = "";
     if (visible_entity) {
       if (visible_entity.type === "person" && visible_entity.name) {
         entityFocusText = `User is currently looking at person profile: ${visible_entity.name} (${visible_entity.description || "family member"}). Any pronouns like 'she', 'her', 'who is this' refer directly to ${visible_entity.name}.`;
-        sources.push({
-          fact_id: `entity:${visible_entity.name}`,
-          source_type: "visible_person_profile",
-          verified: true,
-          text: `${visible_entity.name}: ${visible_entity.description || "Close family member"}`,
-        });
       } else if (visible_entity.type === "photo" && (visible_entity.title || visible_entity.description)) {
         entityFocusText = `User is currently viewing photo: "${visible_entity.title || "Family Memory"}" - ${visible_entity.description || ""}. Any questions like 'where was this taken' refer to this photograph.`;
-        sources.push({
-          fact_id: "entity:visible_photo",
-          source_type: "visible_photo_memory",
-          verified: true,
-          text: `Photo: ${visible_entity.title} - ${visible_entity.description}`,
-        });
       }
     }
 
-    // Active Game & Scaffolding Context
+    // Active Game & Scaffolding Context.
+    //
+    // Gated on the intent actually being about the activity. Previously this
+    // was injected whenever an activity was open -- so a question about the
+    // day's plan arrived at the model wrapped in "provide the next gentle
+    // hint", and came back as a hint about the activity instead of an answer.
+    // Combined with a stale active_game left behind after navigation, that is
+    // how "what else do I have to do today" was answered with a walk to the
+    // market. The classifier no longer misroutes it; this stops the prompt
+    // from re-introducing the same confusion by another door.
+    const gameIntent = classified.intent === "GAME_ASSISTANCE" || classified.intent === "GAME";
     let gameContextText = "";
-    if (active_game) {
-      gameContextText = `Active Game: "${active_game.title}" (ID: ${active_game.game_id}). Round/Task: ${active_game.current_question || active_game.current_task_index || 1}. Current scaffold level: ${active_game.scaffold_level || "S0 (Independent)"}. If user asks for 'help', 'hint', 'what to do', or 'which one', provide gentle encouragement and the next gentle hint without blurting out the answer!`;
-      sources.push({
-        fact_id: `game:${active_game.game_id}`,
-        source_type: "active_cognitive_game",
-        verified: true,
-        text: `Playing ${active_game.title}: ${active_game.current_question || "Task in progress"}`,
-      });
+    if (active_game && gameIntent) {
+      gameContextText = `Active Game: "${active_game.title}" (ID: ${active_game.game_id}). Round/Task: ${active_game.current_question || active_game.current_task_index || 1}. Current scaffold level: ${active_game.scaffold_level || "S0 (Independent)"}. The person is asking for help with this activity: give gentle encouragement and the next small hint, without giving away the answer.`;
     }
+
+    // "What ELSE do I have to do" -- the titles this conversation has already
+    // covered, so the answer can subtract them instead of repeating itself.
+    const alreadyMentioned: string[] = classified.continuation
+      ? (Array.isArray(history) ? history : [])
+          .filter((h: any) => h?.role === "assistant")
+          .slice(-3)
+          .flatMap((h: any) => String(h.text || h.content || "").match(/\p{Lu}[\p{L}&()'-]+(?:\s+\p{Lu}[\p{L}&()'-]+)*/gu) || [])
+          .filter((w: string) => w.length > 3)
+      : [];
 
     // Format recent conversational turns
     let recentTurns = "";
@@ -500,54 +603,157 @@ async function startServer() {
     let provider: "google_gemini" | "sarvam_ai" | "deterministic" = "deterministic";
     let usedModel = "fallback_engine";
 
-    const promptContent = `Purnima says: "${text}".
+    const evidenceLines = evidencePack.facts.map((f) => `- ${f.text}${f.verified ? "" : " (unverified claim -- hedge this)"}`).join("\n");
+
+    // The closing directive is chosen by query mode, not fixed. A single
+    // "be gentle and comforting" instruction applied to every turn is what
+    // turned factual questions into poetry; a general-knowledge question, a
+    // personal one and a screen-contextual one need different things.
+    let responseDirective: string;
+    if (classified.intent === "SOCIAL") {
+      // Small talk is complete in itself. Sending it down the general-knowledge
+      // path made "that's nice" come back as "I don't have that on record."
+      responseDirective = `This is small talk, not a question. Reply with one short, warm acknowledgement. Do not look anything up, do not mention records or schedules, and do not say you don't know something -- nothing was asked.`;
+    } else if (classified.mode === "GENERAL") {
+      responseDirective = `This is a general-knowledge question, not a question about ${identity.displayName}'s own life. Answer it directly and simply in 1-2 spoken sentences. Do not use the facts above, and do not mention their schedule, family, records or notes at all -- not even to say you have nothing recorded.`;
+    } else if (classified.intent === "GAME_ASSISTANCE") {
+      responseDirective = `Give one gentle, encouraging hint for the activity in progress, in a single sentence. Start with the hint itself -- no preamble, and never say you have no recorded answer. Do not give away the answer, and do not introduce any object, place or step that is not in the known facts.`;
+    } else if (classified.intent === "HUMAN_ASSISTANCE") {
+      responseDirective = `Reassure them calmly and briefly, and mention that the Tele-MANAS helpline 14416 is always available.`;
+    } else if (classified.matched_rule === "refusal" || classified.matched_rule === "stop_or_pause") {
+      // "No, not now" is not a lookup. Answering it from the evidence pack
+      // produced "I don't have anything recorded about what you are
+      // declining", which reads as though the refusal itself needed
+      // justifying. Accept it and stop.
+      responseDirective = `They have declined or asked to stop. Accept it warmly in one short sentence and stop there. Ask nothing, suggest nothing, and never mention records, schedules or the time.`;
+    } else if (classified.intent === "GAME") {
+      // They asked to do something. The activity itself is offered separately
+      // as a declinable invitation, so this sentence only has to be a warm
+      // lead-in -- not a report on what is or isn't recorded.
+      responseDirective = `They would like to do something together. Reply with one short, warm sentence agreeing. Do not describe or invent any activity, do not list options, and never say you have nothing recorded -- a suggestion is being prepared separately.`;
+    } else if (classified.matched_rule === "page_help") {
+      // A question about the screen, answered from the screen. The generic
+      // directive below sent these down the "say you don't have it recorded"
+      // path, which answered a question about the interface as though it were
+      // a question about the person's records.
+      responseDirective = [
+        `They are asking what they can do on the page they are looking at (currently: "${page}").`,
+        `Describe, in one or two warm sentences, what is available there and what they might say next.`,
+        `Do NOT mention records, schedules or notes, and never say you don't have something recorded -- they did not ask about their own information.`,
+      ].join(" ");
+    } else if (classified.matched_rule === "grounding_or_wayfinding") {
+      // "Where am I" is a question about safety as much as geography. Answered
+      // from the recorded home if there is one; if there isn't, the answer is
+      // reassurance WITHOUT a location claim -- never a comforting guess about
+      // where someone is, and never a bare "I don't have that recorded", which
+      // is the worst possible reply to someone who is disoriented.
+      responseDirective = [
+        `They are asking where they are. If the known facts include their home or another place of theirs, say warmly that they are there, naming it exactly as the facts do.`,
+        `If no place is in the facts, do NOT guess and do NOT name any location: say only that you are right here with them and offer to call someone from the facts.`,
+        `One or two calm sentences. Do not list their schedule.`,
+      ].join(" ");
+    } else {
+      responseDirective = [
+        `Answer the question directly, using ONLY the known facts above.`,
+        classified.temporal_scope !== "NONE"
+          ? `They are asking about ${classified.temporal_scope.toLowerCase()}; only use facts for that day.`
+          : "",
+        classified.continuation
+          ? `They asked what ELSE remains -- do not repeat what the recent conversation already told them; give what is still left.`
+          : "",
+        `If the facts do not contain the answer, say plainly that you don't have it recorded -- do not offer a substitute activity or suggestion.`,
+        `Lead with the answer. Keep it to 1-3 short spoken sentences. Address them as "${identity.honorific || identity.displayName}" at most once, and only where it sounds natural.`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+
+    // The honorific is supplied on every turn, in every mode. It used to appear
+    // only in the personal-question directive, so a general or small-talk turn
+    // had no form of address to use and the model invented one ("Shrimanji").
+    const promptContent = `${identity.displayName} says: "${text}".
 Context:
-- Current Time: Tuesday, 10:30 AM (Pleasant 24°C in Tezpur, Assam)
+- You are speaking with ${identity.displayName}. Address them only as "${identity.honorific || identity.displayName}" -- never any other name, nickname or honorific.
 - Page Context: ${pageContextSummary}
 ${entityFocusText ? `- Entity in focus: ${entityFocusText}` : ""}
 ${gameContextText ? `- Game in progress: ${gameContextText}` : ""}
-${current_task ? `- Current Activity Focus: ${current_task}` : ""}
+${current_task && gameIntent ? `- Current Activity Focus: ${current_task}` : ""}
 ${recentTurns ? `Recent conversation:\n${recentTurns}` : ""}
-- Key People: Daughter Anu (in the house), Granddaughter Rina (calls at 5:00 PM from Guwahati, studying literature), Son Bikash (Bengaluru), ASHA Meena (visits for health check).
-- Routines: Morning Puja & marigolds completed. Afternoon tea at 4:00 PM.
-Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daughterly affection and empathy. Always address her tenderly as "Purnima baideu" or "Aitâ". If she asks for help during a game, provide a gentle hint. If relevant, append an action tag at the end (e.g. [ACTION:call_anu], [ACTION:call_rina], [ACTION:navigate_life], [ACTION:navigate_activity], [ACTION:navigate_people], [ACTION:provide_scaffold], [ACTION:play_flute]).`;
+KNOWN FACTS -- the complete set of things you may state about this person. Do not add to it:
+${evidenceLines || "- (nothing retrieved for this turn)"}
+${responseDirective}
+If an action is clearly being requested, you may append one tag at the end (e.g. [ACTION:call_anu], [ACTION:call_rina], [ACTION:navigate_life], [ACTION:navigate_activity], [ACTION:navigate_people], [ACTION:provide_scaffold], [ACTION:play_flute]).`;
 
-    // Attempt 1: Google Gemini Flash
+    // A general-knowledge answer legitimately names things that are not in the
+    // person's evidence pack ("Dispur", "photosynthesis"), so the grounding
+    // gate applies only to claims about this person's life. Skipping it for
+    // GENERAL mode is what lets the assistant answer an ordinary question at
+    // all instead of falling back to "I don't have that recorded".
+    const groundingFor = (candidate: string) =>
+      classified.mode === "GENERAL"
+        ? { grounded: true, unsupportedNames: [], unsupportedActivities: [], unsupportedTimes: [] }
+        : checkGrounding(candidate, evidencePack);
+
+    // Attempt 1: Google Gemini Flash. Only real, known-good model names --
+    // the previous list included several that don't exist, so every request
+    // paid for 3 guaranteed-failing round trips before ever reaching a model
+    // that responds (Prompt 3 §26/§28: LLM timeout handling, avoid
+    // unnecessary calls). Each attempt is also wall-clock bounded so a slow
+    // provider can't hang the whole turn.
+    const GEMINI_CALL_TIMEOUT_MS = 6000;
     const genAI = getGenAI();
     if (genAI && text) {
-      const candidateModels = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"];
+      // gemini-2.5-flash returns a fast 404 ("no longer available to new
+      // users") in this project's account -- verified directly against the
+      // API, not assumed. gemini-3.6-flash is the confirmed-working current
+      // model; kept as the sole candidate since untested guesses beyond it
+      // (gemini-3.8-flash etc.) either don't exist or are unverified here.
+      const candidateModels = ["gemini-3.6-flash"];
       for (const modelName of candidateModels) {
         try {
-          const response = await genAI.models.generateContent({
-            model: modelName,
-            contents: promptContent,
-            config: {
-              systemInstruction: COMPANION_SYSTEM_INSTRUCTION,
-              temperature: 0.6,
-            },
-          });
+          const response = await Promise.race([
+            genAI.models.generateContent({
+              model: modelName,
+              contents: promptContent,
+              config: {
+                systemInstruction: COMPANION_SYSTEM_INSTRUCTION,
+                temperature: 0.6,
+              },
+            }),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("gemini_timeout")), GEMINI_CALL_TIMEOUT_MS)),
+          ]);
 
-          let rawGenerated = response.text?.trim();
+          const rawGenerated = response.text?.trim();
           if (rawGenerated) {
-            const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(rawGenerated));
-            if (!forbiddenMatch) {
-              const actionMatch = rawGenerated.match(/\[ACTION:([a-z0-9_:]+)\]/i);
+            // The [ACTION:...] tag is protocol, not something the assistant
+            // said about this person's life -- so it is stripped BEFORE the
+            // content checks run. Grading the raw string meant the literal
+            // word "ACTION" was read as an unsupported proper noun, and every
+            // answer that proposed an action was discarded as ungrounded. The
+            // generated path was silently dead whenever it worked best.
+            const actionMatch = rawGenerated.match(/\[ACTION:([a-z0-9_:]+)\]/i);
+            const cleaned = rawGenerated.replace(/\[ACTION:[^\]]*\]/gi, "").trim();
+            const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(cleaned));
+            const grounding = groundingFor(cleaned);
+            if (!forbiddenMatch && grounding.grounded && cleaned) {
               if (actionMatch) {
-                const actionCode = actionMatch[1].toLowerCase();
-                rawGenerated = rawGenerated.replace(/\[ACTION:[^\]]+\]/g, "").trim();
-                detectedAction = parseActionCode(actionCode, active_game);
+                detectedAction = parseActionCode(actionMatch[1].toLowerCase(), active_game);
               }
 
-              answer = rawGenerated;
-              intent = active_game ? "game_assistance" : "gemini_grounded_conversation";
+              answer = cleaned;
+              intent = gameIntent ? "game_assistance" : "gemini_grounded_conversation";
               pathType = "generated";
               provider = "google_gemini";
               usedModel = modelName;
               break;
+            } else if (!grounding.grounded) {
+              console.warn(
+                `[Companion] Gemini answer discarded as ungrounded -- names=[${grounding.unsupportedNames.join(", ")}] activities=[${grounding.unsupportedActivities.join(", ")}] times=[${grounding.unsupportedTimes.join(", ")}]`
+              );
             }
           }
         } catch (geminiErr: any) {
-          console.warn(`[Companion] Gemini model ${modelName} encountered an issue, checking fallback.`);
+          console.warn(`[Companion] Gemini model ${modelName} failed (${geminiErr?.message || geminiErr}), checking fallback.`);
         }
       }
     }
@@ -558,28 +764,37 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
         const sarvamKey = getSarvamApiKey();
         if (sarvamKey) {
           console.info("[Companion] Invoking Sarvam AI fallback (sarvam-105b-conversations)...");
-          const sarvamRes = await callSarvamChat(promptContent, {
-            systemInstruction: COMPANION_SYSTEM_INSTRUCTION,
-            temperature: 0.6,
-            maxTokens: 250,
-          });
+          const sarvamRes = await Promise.race([
+            callSarvamChat(promptContent, {
+              systemInstruction: COMPANION_SYSTEM_INSTRUCTION,
+              temperature: 0.6,
+              maxTokens: 250,
+            }),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("sarvam_timeout")), GEMINI_CALL_TIMEOUT_MS)),
+          ]);
 
-          let rawSarvam = sarvamRes.text?.trim();
+          const rawSarvam = sarvamRes.text?.trim();
           if (rawSarvam) {
-            const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(rawSarvam));
-            if (!forbiddenMatch) {
-              const actionMatch = rawSarvam.match(/\[ACTION:([a-z0-9_:]+)\]/i);
+            // Same ordering as the Gemini branch above: strip the protocol tag
+            // before judging the content.
+            const actionMatch = rawSarvam.match(/\[ACTION:([a-z0-9_:]+)\]/i);
+            const cleaned = rawSarvam.replace(/\[ACTION:[^\]]*\]/gi, "").trim();
+            const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(cleaned));
+            const grounding = groundingFor(cleaned);
+            if (!forbiddenMatch && grounding.grounded && cleaned) {
               if (actionMatch) {
-                const actionCode = actionMatch[1].toLowerCase();
-                rawSarvam = rawSarvam.replace(/\[ACTION:[^\]]+\]/g, "").trim();
-                detectedAction = parseActionCode(actionCode, active_game);
+                detectedAction = parseActionCode(actionMatch[1].toLowerCase(), active_game);
               }
 
-              answer = rawSarvam;
-              intent = active_game ? "game_assistance" : "sarvam_grounded_conversation";
+              answer = cleaned;
+              intent = gameIntent ? "game_assistance" : "sarvam_grounded_conversation";
               pathType = "generated";
               provider = "sarvam_ai";
               usedModel = sarvamRes.model;
+            } else if (!grounding.grounded) {
+              console.warn(
+                `[Companion] Sarvam answer discarded as ungrounded -- names=[${grounding.unsupportedNames.join(", ")}] activities=[${grounding.unsupportedActivities.join(", ")}] times=[${grounding.unsupportedTimes.join(", ")}]`
+              );
             }
           }
         }
@@ -588,114 +803,241 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       }
     }
 
-    // Attempt 3: High-Reliability Grounded Deterministic Engine
+    // Attempt 3: High-Reliability Grounded Deterministic Engine -- built
+    // strictly from the same EvidencePack fed to the LLM above, via the
+    // bounded intent classifier + responder (src/intelligence/context/).
     if (!answer) {
       pathType = "deterministic";
       provider = "deterministic";
       usedModel = "mindmitra_deterministic_v1";
 
-      // 3a. Game scaffolding query
-      if (active_game && (lower.includes("help") || lower.includes("hint") || lower.includes("what") || lower.includes("which") || lower.includes("confused"))) {
-        answer = `You are doing wonderfully, Aitâ. Take your time. Look closely at the warm colors on the screen, and think about your morning routine with Anu.`;
-        asText = `আপুনি বৰ সুন্দৰকৈ কৰিছে, আইতা। লাহে-ধীৰে চাওক। পৰ্দাত থকা উজ্জ্বল ৰংবোৰ চাওক আৰু পুৱাৰ অনুৰ লগত কৰা কামবোৰ মনত পেলাওক।`;
-        intent = "game_assistance";
-        detectedAction = {
-          type: "provide_scaffold",
-          label: "Show Gentle Visual Cue",
-          target: active_game.game_id,
-        };
-      }
-      // 3b. Visible Person pronoun query ("tell me about her", "who is she", "call her")
-      else if (visible_entity?.type === "person" && (lower.includes("her") || lower.includes("she") || lower.includes("who") || lower.includes("call"))) {
-        const pName = visible_entity.name || "your loved one";
-        if (pName.toLowerCase().includes("rina")) {
-          answer = "This is your granddaughter Rina, Aitâ. She is studying in Guwahati and calls you every Tuesday at 5:00 PM. She always brings you sweet til pitha.";
-          asText = "এয়া আপোনাৰ মৰমৰ নাতিনী ৰীনা, আইতা। গুৱাহাটীত পঢ়ি আছে আৰু প্ৰতি মঙলবাৰে বিয়লি ৫ বজাত আপোনাক ফোন কৰে।";
-          detectedAction = { type: "call_contact", label: "Call Rina (+91 94350 98765)", target: "Rina", phone: "+91 94350 98765" };
-        } else if (pName.toLowerCase().includes("anu")) {
-          answer = "This is your daughter Anu, Purnima baideu. She lives right here in the house with you, making sure your home is peaceful and filled with love.";
-          asText = "এয়া আপোনাৰ জীয়ৰী অনু, পূৰ্ণিমা বাইদেউ। তেওঁ আপোনাৰ লগতে ঘৰতে আছে আৰু আপোনাৰ সকলো যত্ন লৈছে।";
-          detectedAction = { type: "call_contact", label: "Call Anu (+91 98640 12345)", target: "Anu", phone: "+91 98640 12345" };
-        } else {
-          answer = `This is ${pName}, who loves and cherishes you very dearly, Aitâ.`;
-          asText = `এয়া আপোনাৰ মৰমৰ ${pName}, যিয়ে আপোনাক বৰ মৰম আৰু শ্ৰদ্ধা কৰে।`;
-        }
-        intent = "person_clarification";
-      }
-      // 3c. Photo query ("where was this taken", "who is in this picture")
-      else if (visible_entity?.type === "photo" || lower.includes("photo") || lower.includes("picture") || lower.includes("album") || lower.includes("bihu")) {
-        answer = "This is your family gathering during the Rongali Bihu festival in Tezpur. You are standing under the mango tree with daughter Anu and granddaughter Rina.";
-        asText = "এয়া তেজপুৰত ৰঙালী বিহুৰ সময়ত আপোনাৰ পৰিয়ালৰ ফটো। আমগছৰ তলত জীয়ৰী অনু আৰু নাতিনী ৰীনাৰ লগত আপুনি হাঁহি আছে।";
-        intent = "life_memory";
-        detectedAction = { type: "show_media", label: "Open Family Photo Album", target: "life" };
-      }
-      // 3d. Routine & Time questions
-      else if (lower.includes("today") || lower.includes("time") || lower.includes("happening") || lower.includes("plan") || lower.includes("routine")) {
-        answer = "Today is Tuesday in Tezpur, Aitâ. In the afternoon at 4:00 PM, warm cardamom tea with ginger is waiting for you, and granddaughter Rina will call at 5:00 PM.";
-        asText = "আজি মঙলবাৰ, আইতা। বিয়লি ৪ বজাত আপোনাৰ বাবে গৰম ইলাচী চাহ আৰু ৫ বজাত গুৱাহাটীৰ পৰা নাতিনী ৰীনাৰ ফোন আহিব।";
-        intent = "day_orientation";
-        detectedAction = { type: "navigate", label: "See Today's Plan", target: "day" };
-      }
-      // 3e. Specific family members
-      else if (lower.includes("rina") || lower.includes("granddaughter")) {
-        answer = "Rina is calling you from Guwahati at 5:00 PM today, Aitâ. She loves hearing your stories about Tezpur.";
-        asText = "ৰীনাই আজি বিয়লি ৫ বজাত গুৱাহাটীৰ পৰা আপোনাক ফোন কৰিব, আইতা। আপোনাৰ সাধু কথাবোৰ তাই বৰ ভাল পায়।";
-        intent = "family_connection";
-        detectedAction = { type: "call_contact", label: "Call Rina (+91 94350 98765)", target: "Rina", phone: "+91 94350 98765" };
-      } else if (lower.includes("anu") || lower.includes("daughter")) {
-        answer = "Anu is right here in the house with you, Purnima baideu. She is taking wonderful care of you.";
-        asText = "অনু আপোনাৰ লগতে ঘৰতে আছে, পূৰ্ণিমা বাইদেউ। তেওঁ আপোনাৰ সুন্দৰ যত্ন লৈ আছে।";
-        intent = "family_connection";
-        detectedAction = { type: "call_contact", label: "Call Anu (+91 98640 12345)", target: "Anu", phone: "+91 98640 12345" };
-      }
-      // 3f. Activity & Music requests
-      else if (lower.includes("activity") || lower.includes("game") || lower.includes("garland") || lower.includes("flower") || lower.includes("play")) {
-        answer = "Let's weave marigold flowers together, Aitâ, or match pleasant family moments.";
-        asText = "আহক আমি একেলগে গেন্দুপুলৰ মালা গাঁথোঁ বা পুৰণি সুখৰ ক্ষণবোৰ মনত পেলাওঁ।";
-        intent = "gentle_activity";
-        detectedAction = { type: "start_activity", label: "Start Gentle Flower Garland", target: "activity" };
-      } else if (lower.includes("music") || lower.includes("song") || lower.includes("flute")) {
-        answer = "Here is the peaceful bamboo flute raga from Tezpur to relax your mind and bring calm to your heart.";
-        asText = "আপোনাৰ মন শান্ত কৰিবলৈ তেজপুৰৰ এই সুমধুৰ বাঁহীৰ সুৰটি বজাওঁ।";
-        intent = "music_reassurance";
-        detectedAction = { type: "play_music", label: "Play Bamboo Flute Raga", target: "life", payload: { track: "flute" } };
-      }
-      // 3g. Tea & Refreshment
-      else if (lower.includes("tea") || lower.includes("chai")) {
-        answer = "Anu is preparing your fragrant cardamom and fresh ginger tea for 4:00 PM on the veranda.";
-        asText = "বিয়লি ৪ বজাত বাৰান্দাত আপোনাৰ বাবে ইলাচী আৰু আদা দিয়া গৰম চাহ ৰখা হ'ব।";
-        intent = "routine_reassurance";
-        detectedAction = { type: "start_activity", label: "Prepare Afternoon Tea", target: "activity" };
-      }
-      // 3h. General reassurance
-      else {
-        answer = "Namaskar Purnima baideu. You are safe in your peaceful home in Tezpur. Anu is close by, and I am right here beside you.";
-        asText = "নমস্কাৰ পূৰ্ণিমা বাইদেউ। আপুনি তেজপুৰৰ শান্ত নিজা ঘৰতে আছে। অনু কাষতে আছে আৰু মই আপোনাৰ লগতে আছোঁ।";
-        intent = "general_companion";
-      }
+      const deterministic = buildDeterministicAnswer(classified, projection || {
+        person: { id: personId, display_name: identity.displayName, honorific: identity.honorific, preferred_language: language, culture: identity.culture },
+        currentContext: { now_iso: new Date().toISOString(), time_of_day: "afternoon", page, time_zone: identity.timeZone, scope: classified.temporal_scope, scope_label: "today" },
+        today: { upcoming: [] },
+        people: [],
+        memories: [],
+        places: [],
+        preferences: [],
+        consent: { personalisation_active: false },
+        safety: { firewall_passed: true, cross_person_blocked: 0, stale_or_cancelled_blocked: 0, private_or_sensitive_blocked: 0, unverified_flagged: 0 },
+      }, evidencePack, {
+        visibleEntityName: visible_entity?.name || null,
+        language: language === "as" ? "as" : "en",
+        messageText: text,
+        alreadyMentioned,
+      });
+
+      answer = deterministic.answer;
+      asText = deterministic.asText;
+      intent = deterministic.intent;
+      detectedAction = deterministic.action;
     }
 
     // Helper for action parsing
+    // Prompt 4 §21: call_contact is the only higher-impact action type here --
+    // everything else (navigate, start an activity, show media) is low risk
+    // and may execute directly.
     function parseActionCode(actionCode: string, activeGame: any) {
       if (actionCode.includes("call_anu")) {
-        return { type: "call_contact", label: "Call Daughter Anu", target: "Anu", phone: "+91 98640 12345" };
+        return { type: "call_contact", label: "Call Daughter Anu", target: "Anu", phone: "+91 98640 12345", risk: "requires_confirmation" };
       } else if (actionCode.includes("call_rina")) {
-        return { type: "call_contact", label: "Call Granddaughter Rina", target: "Rina", phone: "+91 94350 98765" };
+        return { type: "call_contact", label: "Call Granddaughter Rina", target: "Rina", phone: "+91 94350 98765", risk: "requires_confirmation" };
       } else if (actionCode.includes("navigate_life") || actionCode.includes("photos")) {
-        return { type: "navigate", label: "View Family Photos & Music", target: "life" };
+        return { type: "navigate", label: "View Family Photos & Music", target: "life", risk: "low" };
       } else if (actionCode.includes("navigate_activity") || actionCode.includes("garland") || actionCode.includes("tea")) {
-        return { type: "start_activity", label: "Start Gentle Activity", target: "activity" };
+        return { type: "start_activity", label: "Start Gentle Activity", target: "activity", risk: "low" };
       } else if (actionCode.includes("navigate_people")) {
-        return { type: "navigate", label: "See Loved People", target: "people" };
+        return { type: "navigate", label: "See Loved People", target: "people", risk: "low" };
       } else if (actionCode.includes("navigate_help")) {
-        return { type: "navigate", label: "Open Help & Support", target: "help" };
+        return { type: "navigate", label: "Open Help & Support", target: "help", risk: "low" };
       } else if (actionCode.includes("provide_scaffold") || actionCode.includes("hint")) {
-        return { type: "provide_scaffold", label: "Show Visual Cue", target: activeGame?.game_id || "yesterday_today_tomorrow" };
+        return { type: "provide_scaffold", label: "Show Visual Cue", target: activeGame?.game_id || "yesterday_today_tomorrow", risk: "low" };
       } else if (actionCode.includes("play_flute")) {
-        return { type: "play_music", label: "Play Bamboo Flute Raga", target: "life", payload: { track: "flute" } };
+        return { type: "play_music", label: "Play Bamboo Flute Raga", target: "life", payload: { track: "flute" }, risk: "low" };
       }
       return null;
     }
+
+    // ── Conversation -> Experience bridge (Sections 6/7/8) ──────────────────
+    //
+    // The assistant never fabricates an activity. It decides whether one would
+    // genuinely follow from what was just said, then asks the Experience
+    // Planner for a real, validated one. If the planner has nothing grounded,
+    // no invitation is made -- an invitation that leads to "I don't have
+    // enough saved information" is worse than saying nothing.
+    //
+    // This runs after the answer is settled and never changes it. It does sit
+    // in the turn's critical path -- the offer ships in the same response --
+    // so it is given a hard time budget: past that the person gets their
+    // answer now and simply no offer. A slow or failed planner costs the
+    // person an offer, not their reply.
+    let experienceInvitation: {
+      spec_id: string;
+      template_id: string;
+      title: string;
+      text: string;
+      accept_label: string;
+      decline_label: string;
+      deep_link: string;
+    } | null = null;
+    let invitationWhy = "not evaluated";
+
+    try {
+      const recentExperience = await experienceRepo.getRecentExperience(personId).catch(() => ({
+        recent_template_ids: [],
+        declined_template_ids: [],
+        suppressed_entity_ids: [],
+        suggestions_in_window: 0,
+      }));
+
+      const decision = decideInvitation({
+        classified,
+        text,
+        hadEvidence: evidencePack.facts.length > 0,
+        recent: recentExperience,
+        activityInProgress: !!active_game,
+      });
+      invitationWhy = decision.why;
+
+      if (decision.offer) {
+        // An unsolicited offer is not worth delaying the person's reply for,
+        // so it gets a tight budget. A requested one is: they asked, and
+        // "let's do something" answered with nothing because a cache was cold
+        // is a failure, not a graceful degradation.
+        const INVITATION_PLAN_BUDGET_MS = decision.explicit ? 7000 : 1500;
+        const planned = await Promise.race([
+          planExperience({
+            personId,
+            trigger: "conversation",
+            conversationText: text,
+            preferTemplate: decision.templates[0],
+            displayName: identity.displayName,
+            honorific: identity.honorific,
+            culture: identity.culture,
+            language,
+            timeZone: identity.timeZone,
+          }),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), INVITATION_PLAN_BUDGET_MS)),
+        ]);
+
+        if (planned === null) {
+          invitationWhy = decision.why + "; planner exceeded its time budget";
+        } else if (planned.status === "ready") {
+          const copy = invitationCopy(planned.spec.title, planned.spec.invitation_text);
+          experienceInvitation = {
+            spec_id: planned.spec.spec_id,
+            template_id: planned.spec.template_id,
+            title: planned.spec.title,
+            text: copy.text,
+            accept_label: copy.accept_label,
+            decline_label: copy.decline_label,
+            // The link that takes the person straight to this activity.
+            deep_link: "/person/activity?experience=" + planned.spec.spec_id,
+          };
+
+          // Section 45: a suggestion is itself an event. Recording it is what
+          // stops the assistant offering three activities in five minutes.
+          experienceRepo
+            .recordExperienceEvents([
+              {
+                person_id: personId,
+                spec_id: planned.spec.spec_id,
+                template_id: planned.spec.template_id,
+                reason: planned.spec.reason,
+                event_type: "EXPERIENCE_SUGGESTED",
+                language,
+                context: { via: "conversation", intent: classified.intent, page },
+                idempotency_key: "suggest_" + planned.spec.spec_id,
+              },
+            ])
+            .catch(() => {});
+
+          // The offer rides alongside the answer as a separate, declinable
+          // field -- it is never spliced into the spoken sentence, so the
+          // person hears their answer first and the activity stays optional.
+          if (!detectedAction) {
+            detectedAction = {
+              type: "suggest_experience",
+              label: copy.accept_label,
+              target: "activity",
+              payload: { experience_id: planned.spec.spec_id },
+              risk: "low",
+            };
+          }
+        } else {
+          invitationWhy = decision.why + "; planner returned " + planned.status;
+        }
+      }
+    } catch (invitationErr) {
+      console.warn("[Companion] experience invitation skipped:", (invitationErr as Error)?.message || invitationErr);
+    }
+
+    // Conversational Experience Memory (Prompt 4 §26): persist the turn so
+    // future retrieval and repetition-aware behavior have real history to
+    // draw on. Fire-and-forget -- a slow/failed write must never delay or
+    // break the person's actual response.
+    personDataRepo
+      .recordCompanionTurn({
+        person_id: personId,
+        message: text,
+        answer,
+        intent,
+        classified_intent: classified.intent,
+        path: pathType,
+        provider,
+        grounded: pathType === "deterministic" ? true : checkGrounding(answer, evidencePack).grounded,
+        action_type: detectedAction?.type || null,
+        page,
+        latency_ms: Date.now() - startTurnTime,
+      })
+      .catch((err) => console.warn("Failed to record companion turn:", err?.message || err));
+
+    // ── Developer retrieval trace (Prompt 4 §24/§58) ─────────────────────────
+    // Makes "why did it answer that?" answerable without re-deriving the whole
+    // pipeline by hand. Opt-in per request (?trace=1 or x-mindmitra-trace), so
+    // the Person UI -- which never asks for it -- can never render it.
+    const traceRequested = req.query?.trace === "1" || req.headers["x-mindmitra-trace"] === "1";
+    const retrievalTrace = {
+      query: text,
+      intent: classified.intent,
+      matched_rule: classified.matched_rule,
+      mode: classified.mode,
+      temporal_scope: classified.temporal_scope,
+      continuation: classified.continuation,
+      requires_retrieval: classified.requires_retrieval,
+      page_context: { surface, page, route, visible_entity, active_game, game_context_applied: gameIntent && !!active_game },
+      resolved_day: projection?.currentContext
+        ? {
+            now_iso: projection.currentContext.now_iso,
+            time_zone: projection.currentContext.time_zone,
+            label: projection.currentContext.scope_label,
+            day_offset: retrievalPlan.dayOffset,
+          }
+        : null,
+      retrieval_plan: retrievalPlan,
+      retrieved_record_ids: {
+        day_events: projection?.day?.events.map((e) => e.id) ?? [],
+        routines: projection?.day?.routines.map((r) => r.id) ?? [],
+        medications: projection?.day?.medications.map((m) => m.id) ?? [],
+        upcoming: projection?.today.upcoming.map((e) => e.id) ?? [],
+        people: projection?.people.map((p) => p.id) ?? [],
+        memories: projection?.memories.map((m) => m.id) ?? [],
+      },
+      day_state: projection?.day
+        ? { attempted: projection.day.attempted, nothing_recorded: projection.day.nothing_recorded, unavailable: projection.day.not_retrieved }
+        : null,
+      evidence_pack: evidencePack.facts.map((f) => ({ fact_id: f.fact_id, source_type: f.source_type, text: f.text })),
+      already_mentioned: alreadyMentioned,
+      response: { path: pathType, provider, model: usedModel, intent, action: detectedAction?.type || null },
+      safety: projection?.safety ?? null,
+      experience_invitation: { offered: !!experienceInvitation, why: invitationWhy, spec_id: experienceInvitation?.spec_id ?? null },
+    };
+    console.info(
+      `[Companion] "${text}" -> ${classified.intent}/${classified.mode}/${classified.temporal_scope}` +
+        ` (${classified.matched_rule}) | plan=${Object.entries(retrievalPlan).filter(([, v]) => v === true).map(([k]) => k).join(",") || "none"}` +
+        ` | facts=${evidencePack.facts.length} | path=${pathType}:${provider}`
+    );
 
     res.json({
       request_id: `req_${Date.now()}`,
@@ -726,6 +1068,8 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
         active_game,
         current_task,
       },
+      experience_invitation: experienceInvitation,
+      ...(traceRequested ? { trace: retrievalTrace } : {}),
     });
   });
 
@@ -1041,24 +1385,36 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
     });
   });
 
-  app.post("/v1/identity/consent/grant", (req: Request, res: Response) => {
+  app.post("/v1/identity/consent/grant", async (req: Request, res: Response) => {
     anuConsentGranted = true;
+    const { person_id = "person:purnima", purpose = "personalisation", category = "life_story_memory", granted_by = "Anu (Primary Caregiver)" } = req.body || {};
+    try {
+      await personDataRepo.grantConsent({ person_id, purpose, category, granted_to_role: "primary_caregiver", granted_by });
+    } catch (err: unknown) {
+      console.warn("Failed to persist consent grant:", err instanceof Error ? err.message : err);
+    }
     res.json({
       status: "granted",
       grantee_role: "primary_caregiver",
-      category: "life_story_memory",
-      purpose: "personalisation",
+      category,
+      purpose,
       active: true,
     });
   });
 
-  app.post("/v1/identity/consent/revoke", (req: Request, res: Response) => {
+  app.post("/v1/identity/consent/revoke", async (req: Request, res: Response) => {
     anuConsentGranted = false;
+    const { person_id = "person:purnima", purpose = "personalisation", category = "life_story_memory" } = req.body || {};
+    try {
+      await personDataRepo.revokeConsent(person_id, purpose, category);
+    } catch (err: unknown) {
+      console.warn("Failed to persist consent revoke:", err instanceof Error ? err.message : err);
+    }
     res.json({
       status: "revoked",
       grantee_role: "primary_caregiver",
-      category: "life_story_memory",
-      purpose: "personalisation",
+      category,
+      purpose,
       active: false,
     });
   });
@@ -1169,16 +1525,31 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
   });
 
   // D. Memories Collection API (with Provenance & Verification)
-  app.get("/v1/memories", (req: Request, res: Response) => {
+  app.get("/v1/memories", async (req: Request, res: Response) => {
     const { person_id, verification_status, temporal_frame } = req.query;
-    let list = cognitiveStore.memories;
-    if (person_id) list = list.filter((m) => m.person_id === person_id);
-    if (verification_status) list = list.filter((m) => m.verification_status === verification_status);
-    if (temporal_frame) list = list.filter((m) => m.temporal_frame === temporal_frame);
-    res.json({ count: list.length, items: list });
+    try {
+      const list = await personDataRepo.listMemories(String(person_id || "person:purnima"), {
+        verificationStatus: verification_status ? String(verification_status) : undefined,
+        temporalFrame: temporal_frame ? String(temporal_frame) : undefined,
+      });
+      await personDataRepo.logFirewallAccess({
+        person_id: String(person_id || "person:purnima"),
+        actor_id: "actor:purnima",
+        actor_role: "person",
+        purpose: "memory",
+        requested_entity_type: "memory_items",
+        decision: "ALLOW",
+        policy_reason: "Person reading own memories.",
+        filtered_count: list.length,
+      });
+      res.json({ count: list.length, items: list });
+    } catch (err: unknown) {
+      console.warn("Failed to list memories from Neon:", err instanceof Error ? err.message : err);
+      res.json({ count: 0, items: [] });
+    }
   });
 
-  app.post("/v1/memories", (req: Request, res: Response) => {
+  app.post("/v1/memories", async (req: Request, res: Response) => {
     const {
       person_id = "person:purnima",
       memory_type = "autobiographical",
@@ -1192,8 +1563,6 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       sensitivity = "low",
       cultural_context = "Tezpur, Assam",
       media_refs = [],
-      people_refs = [],
-      voice_notes = [],
     } = req.body || {};
 
     if (!title) {
@@ -1201,7 +1570,7 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
     }
 
     // New uploaded memory from person starts as unverified claim
-    const created = cognitiveStore.addMemory({
+    const created = await personDataRepo.createMemory({
       person_id,
       memory_type,
       title,
@@ -1210,16 +1579,14 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       temporal_frame,
       approximate_period,
       source,
-      verification_status: source === "caregiver" ? "caregiver_verified" : verification_status,
+      verification_status: source === "caregiver" ? "verified" : verification_status,
       confidence: source === "caregiver" ? 0.98 : 0.75,
       sensitivity,
       cultural_context,
       consent_scope: req.body.consent_scope || (source === "caregiver" ? "all" : "person_only"),
       visibility_scope: req.body.visibility_scope || (source === "caregiver" ? "family" : "private"),
       created_by: req.body.created_by || (source === "caregiver" ? "actor:anu" : "actor:purnima"),
-      media_refs,
-      people_refs,
-      voice_notes,
+      media_asset_ids: media_refs,
     });
 
     res.json({
@@ -1232,9 +1599,9 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
   });
 
   // E. Verify Memory (Caregiver / CHW / Clinician Action)
-  app.post("/v1/memories/:id/verify", (req: Request, res: Response) => {
-    const { verified_by = "Anu (Primary Caregiver)", role = "caregiver", relationship_note, notes } = req.body || {};
-    const updated = cognitiveStore.verifyMemory(req.params.id, verified_by, role, relationship_note, notes);
+  app.post("/v1/memories/:id/verify", async (req: Request, res: Response) => {
+    const { verified_by = "Anu (Primary Caregiver)" } = req.body || {};
+    const updated = await personDataRepo.verifyMemory(req.params.id, verified_by);
     if (!updated) {
       return res.status(404).json({ error: "Memory item not found." });
     }
@@ -1246,73 +1613,62 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
   });
 
   // ── Media Assets API (PERSON vs CAREGIVER with full 9 provenance fields) ──
-  app.get("/v1/media-assets", (req: Request, res: Response) => {
-    const { person_id, media_type, verification_status } = req.query;
-    let list = cognitiveStore.mediaAssets;
-    if (person_id) list = list.filter((a) => a.person_id === person_id);
-    if (media_type) list = list.filter((a) => a.media_type === media_type);
-    if (verification_status) list = list.filter((a) => a.verification_status === verification_status);
-    res.json({ count: list.length, items: list });
+  app.get("/v1/media-assets", async (req: Request, res: Response) => {
+    const { person_id, media_type } = req.query;
+    try {
+      const list = await personDataRepo.listMediaAssets(String(person_id || "person:purnima"), media_type ? String(media_type) : undefined);
+      res.json({ count: list.length, items: list });
+    } catch (err: unknown) {
+      console.warn("Failed to list media assets from Neon:", err instanceof Error ? err.message : err);
+      res.json({ count: 0, items: [] });
+    }
   });
 
-  app.post("/v1/media-assets", (req: Request, res: Response) => {
+  app.post("/v1/media-assets", async (req: Request, res: Response) => {
     const {
       person_id = "person:purnima",
-      title,
       url,
       media_type = "photo",
       mime_type = "image/jpeg",
       source = "person",
-      verification_status,
-      confidence,
       consent_scope,
       visibility_scope,
-      sensitivity = "low",
       created_by = "person:purnima",
-      thumbnail_url,
     } = req.body || {};
 
-    if (!title || !url) {
-      return res.status(400).json({ error: "Media title and URL are required." });
+    if (!url) {
+      return res.status(400).json({ error: "Media URL is required." });
     }
 
-    const asset = cognitiveStore.addMediaAsset({
+    const asset = await personDataRepo.createMediaAsset({
       person_id,
-      title,
-      url,
+      storage_key: url,
       media_type,
       mime_type,
-      source,
-      verification_status,
-      confidence,
+      created_by,
       consent_scope,
       visibility_scope,
-      sensitivity,
-      created_by,
-      thumbnail_url,
     });
 
     res.json({
       status: "created",
       asset,
       provenance_note:
-        asset.source === "person"
+        source === "person"
           ? "Uploaded as person memory asset (unverified). Requires caregiver verification before cognitive game inclusion."
           : "Verified caregiver asset available for cognitive grounding.",
     });
   });
 
   // Attach media to memory
-  app.post("/v1/memories/:id/media", (req: Request, res: Response) => {
-    const { media_asset_id, role = "primary_photo", caption, display_order, created_by } = req.body || {};
+  app.post("/v1/memories/:id/media", async (req: Request, res: Response) => {
+    const { media_asset_id, role = "primary_photo", display_order } = req.body || {};
     if (!media_asset_id) {
       return res.status(400).json({ error: "media_asset_id is required." });
     }
-    const attached = cognitiveStore.attachMediaToMemory(req.params.id, media_asset_id, {
+    const attached = await personDataRepo.attachMediaToMemory(req.params.id, media_asset_id, {
       role,
-      caption,
-      displayOrder: display_order,
-      createdBy: created_by,
+      sequenceOrder: display_order,
     });
     if (!attached) {
       return res.status(404).json({ error: "Memory or media asset not found." });
@@ -1321,15 +1677,18 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
   });
 
   // ── Familiar Places API (Optional coordinates, landmark cues, sensory grounding) ──
-  app.get("/v1/places", (req: Request, res: Response) => {
+  app.get("/v1/places", async (req: Request, res: Response) => {
     const { person_id, verification_status } = req.query;
-    let list = cognitiveStore.familiarPlaces;
-    if (person_id) list = list.filter((p) => p.person_id === person_id);
-    if (verification_status) list = list.filter((p) => p.verification_status === verification_status);
-    res.json({ count: list.length, items: list });
+    try {
+      const list = await personDataRepo.listPlaces(String(person_id || "person:purnima"), verification_status ? String(verification_status) : undefined);
+      res.json({ count: list.length, items: list });
+    } catch (err: unknown) {
+      console.warn("Failed to list places from Neon:", err instanceof Error ? err.message : err);
+      res.json({ count: 0, items: [] });
+    }
   });
 
-  app.post("/v1/places", (req: Request, res: Response) => {
+  app.post("/v1/places", async (req: Request, res: Response) => {
     const {
       person_id = "person:purnima",
       name,
@@ -1343,11 +1702,6 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       coordinates = null,
       media_refs = [],
       source = "caregiver",
-      verification_status,
-      confidence,
-      consent_scope,
-      visibility_scope,
-      sensitivity = "low",
       created_by = "actor:anu",
     } = req.body || {};
 
@@ -1355,7 +1709,7 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       return res.status(400).json({ error: "Place name and personal significance are required." });
     }
 
-    const place = cognitiveStore.addPlace({
+    const place = await personDataRepo.createPlace({
       person_id,
       name,
       assamese_name,
@@ -1366,17 +1720,85 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
       sensory_cues,
       approximate_period: approximate_period || "Present",
       coordinates: coordinates || null,
-      media_refs,
       source,
-      verification_status,
-      confidence,
-      consent_scope,
-      visibility_scope,
-      sensitivity,
       created_by,
+      media_asset_ids: media_refs,
     });
 
     res.json({ status: "created", place });
+  });
+
+  app.post("/v1/places/:id/verify", async (req: Request, res: Response) => {
+    const updated = await personDataRepo.verifyPlace(req.params.id);
+    if (!updated) {
+      return res.status(404).json({ error: "Place not found." });
+    }
+    res.json({ status: "verified", place: updated });
+  });
+
+  // ── Familiar People (Family & Care Team Directory) ──
+  app.get("/v1/people", async (req: Request, res: Response) => {
+    const { person_id } = req.query;
+    const personId = String(person_id || "person:purnima");
+    try {
+      const list = await personDataRepo.listFamiliarPeople(personId);
+      await personDataRepo.logFirewallAccess({
+        person_id: personId,
+        actor_id: "actor:purnima",
+        actor_role: "person",
+        purpose: "personalisation",
+        requested_entity_type: "person_entities",
+        decision: "ALLOW",
+        policy_reason: "Person reading own family/care-team directory.",
+        filtered_count: list.length,
+      });
+      res.json({ count: list.length, items: list });
+    } catch (err: unknown) {
+      console.warn("Failed to list familiar people from Neon:", err instanceof Error ? err.message : err);
+      res.json({ count: 0, items: [] });
+    }
+  });
+
+  // ── Goals ──
+  app.get("/v1/goals", async (req: Request, res: Response) => {
+    const { person_id, status } = req.query;
+    try {
+      const list = await personDataRepo.listGoals(String(person_id || "person:purnima"), status ? String(status) : "active");
+      res.json({ count: list.length, items: list });
+    } catch (err: unknown) {
+      console.warn("Failed to list goals from Neon:", err instanceof Error ? err.message : err);
+      res.json({ count: 0, items: [] });
+    }
+  });
+
+  app.post("/v1/goals", async (req: Request, res: Response) => {
+    const { person_id = "person:purnima", goal_type, description, created_by = "actor:anu", target_date } = req.body || {};
+    if (!goal_type || !description) {
+      return res.status(400).json({ error: "goal_type and description are required." });
+    }
+    const goal = await personDataRepo.createGoal({ person_id, goal_type, description, created_by, target_date });
+    res.json({ status: "created", goal });
+  });
+
+  // ── Preferences (explicit vs inferred, append-only) ──
+  app.get("/v1/preferences", async (req: Request, res: Response) => {
+    const { person_id } = req.query;
+    try {
+      const list = await personDataRepo.getActivePreferences(String(person_id || "person:purnima"));
+      res.json({ count: list.length, items: list });
+    } catch (err: unknown) {
+      console.warn("Failed to list preferences from Neon:", err instanceof Error ? err.message : err);
+      res.json({ count: 0, items: [] });
+    }
+  });
+
+  app.post("/v1/preferences", async (req: Request, res: Response) => {
+    const { person_id = "person:purnima", dimension, value, evidence_source = "system_inferred", confidence } = req.body || {};
+    if (!dimension || value === undefined) {
+      return res.status(400).json({ error: "dimension and value are required." });
+    }
+    const result = await personDataRepo.recordPreference({ person_id, dimension, value, evidence_source, confidence });
+    res.json({ status: "recorded", ...result });
   });
 
   app.post("/v1/places/:id/verify", (req: Request, res: Response) => {
@@ -1657,26 +2079,40 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
   });
 
   // F. Prospective Future Events API
-  app.get("/v1/future-events", (req: Request, res: Response) => {
-    res.json({ count: cognitiveStore.futureEvents.length, items: cognitiveStore.futureEvents });
+  app.get("/v1/future-events", async (req: Request, res: Response) => {
+    const { person_id } = req.query;
+    try {
+      // Only expected/confirmed, non-expired events -- cancelled or stale events
+      // are never treated as current (see listUpcomingEvents).
+      const list = await personDataRepo.listUpcomingEvents(String(person_id || "person:purnima"));
+      res.json({ count: list.length, items: list });
+    } catch (err: unknown) {
+      console.warn("Failed to list future events from Neon:", err instanceof Error ? err.message : err);
+      res.json({ count: 0, items: [] });
+    }
   });
 
-  app.post("/v1/future-events", (req: Request, res: Response) => {
-    const { title, event_type = "family_visit", person_name = "Rina", scheduled_at, location = "Veranda, Tezpur" } = req.body || {};
-    const newEvent: FutureEvent = {
-      id: `event_${Date.now()}`,
-      person_id: "person:purnima",
+  app.post("/v1/future-events", async (req: Request, res: Response) => {
+    const {
+      person_id = "person:purnima",
+      title,
+      event_type = "family_visit",
+      person_name = "Rina",
+      relationship = "granddaughter",
+      scheduled_at,
+      location = "Veranda, Tezpur",
+      source = "caregiver",
+    } = req.body || {};
+    const newEvent = await personDataRepo.createFutureEvent({
+      person_id,
       event_type,
       title: title || "Family Visit",
       person_name,
-      relationship: "granddaughter",
-      location,
+      relationship,
+      location_name: location,
       scheduled_at: scheduled_at || new Date(Date.now() + 4 * 3600 * 1000).toISOString(),
-      status: "confirmed",
-      source: "caregiver",
-      verification_status: "caregiver_verified",
-    };
-    cognitiveStore.futureEvents.push(newEvent);
+      source,
+    });
     res.json({ status: "created", event: newEvent });
   });
 
@@ -2757,6 +3193,189 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
     });
   });
 
+  // ==========================================================================
+  // EXPERIENCE ENGINE -- "Let's Do Something"
+  //
+  // One planner, one validated spec shape, one renderer. The person's own life
+  // is the content; these endpoints never invent any of it.
+  // ==========================================================================
+
+  /**
+   * Plan (or re-fetch) an experience.
+   *
+   * Returns one of three shapes, and the caller must handle all three:
+   *   ready   -> a validated spec to render
+   *   no_data -> say plainly that the information isn't there; offer something else
+   *   invalid -> a composed spec failed validation and was withheld
+   *
+   * The developer trace is attached only on explicit request (?trace=1 or the
+   * x-mindmitra-trace header), so the Person App -- which never asks -- can
+   * never render internal reasoning (Section 54).
+   */
+  app.post("/v1/experiences/plan", async (req: Request, res: Response) => {
+    const {
+      person_id = "person:purnima",
+      trigger = "lets_do_something",
+      conversation_text,
+      prefer_template,
+      language = "en",
+      max_choices,
+      difficulty,
+    } = req.body || {};
+
+    const identity = identityFor(String(person_id));
+    const traceRequested = req.query?.trace === "1" || req.headers["x-mindmitra-trace"] === "1";
+
+    try {
+      const result = await planExperience({
+        personId: String(person_id),
+        trigger: trigger === "conversation" || trigger === "deep_link" ? trigger : "lets_do_something",
+        conversationText: conversation_text ? String(conversation_text) : undefined,
+        preferTemplate: prefer_template ? (String(prefer_template) as ExperienceTemplateId) : undefined,
+        displayName: identity.displayName,
+        honorific: identity.honorific,
+        culture: identity.culture,
+        language: String(language),
+        timeZone: identity.timeZone,
+        maxChoices: typeof max_choices === "number" ? max_choices : undefined,
+        difficulty: difficulty === 2 || difficulty === 3 ? difficulty : 1,
+      });
+
+      personDataRepo
+        .logFirewallAccess({
+          person_id: String(person_id),
+          actor_id: identity.actorId,
+          actor_role: "person",
+          purpose: "activity_adaptation",
+          requested_entity_type: "experience_spec",
+          decision: result.status === "ready" ? "ALLOW" : "PARTIAL",
+          policy_reason: "Experience planning (" + trigger + "); outcome=" + result.status + ".",
+          filtered_count: result.status === "ready" ? result.spec.provenance.length : 0,
+        })
+        .catch(() => {});
+
+      console.info(
+        "[Experience] plan " + person_id + " trigger=" + trigger + " -> " + result.status +
+          (result.status === "ready" ? "/" + result.spec.template_id : "") +
+          " (" + result.trace.duration_ms + "ms, retrieved " + JSON.stringify(result.trace.retrieval.counts) + ")"
+      );
+
+      if (result.status === "ready") {
+        return res.json({
+          status: "ready",
+          spec: result.spec,
+          ...(traceRequested ? { trace: result.trace } : {}),
+        });
+      }
+
+      return res.json({
+        status: result.status,
+        message: result.message,
+        ...(traceRequested ? { detail: result.detail, trace: result.trace } : {}),
+      });
+    } catch (err: unknown) {
+      // Section 39: never leak a stack trace into a calm surface.
+      console.error("[Experience] planning failed:", err instanceof Error ? err.message : err);
+      return res.status(200).json({
+        status: "no_data",
+        message: "Let's try something else.",
+      });
+    }
+  });
+
+  /** Re-open a previously planned experience by id (the chatbot's deep link). */
+  app.get("/v1/experiences/:specId", async (req: Request, res: Response) => {
+    const personId = String(req.query.person_id || "person:purnima");
+    try {
+      const row = await experienceRepo.getExperienceSpec(personId, req.params.specId);
+      if (!row) {
+        // Not-found rather than forbidden: a link to another person's
+        // experience must not confirm that it exists.
+        return res.status(404).json({ status: "not_found", message: "That activity isn't available any more." });
+      }
+      const traceRequested = req.query?.trace === "1" || req.headers["x-mindmitra-trace"] === "1";
+      return res.json({
+        status: "ready",
+        spec: row.spec,
+        ...(traceRequested ? { trace: row.trace, validation: row.validation } : {}),
+      });
+    } catch (err: unknown) {
+      console.warn("[Experience] spec fetch failed:", err instanceof Error ? err.message : err);
+      return res.status(404).json({ status: "not_found", message: "That activity isn't available any more." });
+    }
+  });
+
+  /**
+   * Telemetry ingest (Section 45). Accepts a batch so the offline outbox can
+   * flush on reconnect; idempotency_key makes a replayed batch a no-op.
+   */
+  app.post("/v1/experiences/events", async (req: Request, res: Response) => {
+    const body = req.body || {};
+    const rawEvents: any[] = Array.isArray(body.events) ? body.events : body.event ? [body.event] : [];
+    const personId = String(body.person_id || "person:purnima");
+
+    if (rawEvents.length === 0) {
+      return res.status(400).json({ error: "events[] or event is required." });
+    }
+
+    const events: ExperienceEventInput[] = rawEvents.map((e) => ({
+      // person_id comes from the request envelope, never from the item: a
+      // client must not be able to write telemetry onto another person.
+      person_id: personId,
+      spec_id: e.spec_id ?? null,
+      template_id: e.template_id ?? null,
+      reason: e.reason ?? null,
+      event_type: e.event_type,
+      step_id: e.step_id ?? null,
+      step_index: typeof e.step_index === "number" ? e.step_index : null,
+      response: e.response ?? null,
+      expected_response: e.expected_response ?? null,
+      outcome: e.outcome ?? null,
+      assistance_level: typeof e.assistance_level === "number" ? Math.max(0, Math.min(5, e.assistance_level)) as 0 : 0,
+      modality: e.modality ?? null,
+      language: e.language ?? null,
+      latency_ms: typeof e.latency_ms === "number" ? e.latency_ms : null,
+      measurement_quality: typeof e.measurement_quality === "number" ? e.measurement_quality : null,
+      measurement_conditions: e.measurement_conditions ?? {},
+      source_entity_ids: Array.isArray(e.source_entity_ids) ? e.source_entity_ids : [],
+      context: e.context ?? {},
+      occurred_at: e.occurred_at,
+      idempotency_key: e.idempotency_key,
+    }));
+
+    try {
+      const written = await experienceRepo.recordExperienceEvents(events);
+      return res.json({ status: "recorded", received: events.length, written });
+    } catch (err: unknown) {
+      console.warn("[Experience] telemetry write failed:", err instanceof Error ? err.message : err);
+      // 202: the client should keep the batch queued and retry, not drop it.
+      return res.status(202).json({ status: "queued_client_side", received: events.length, written: 0 });
+    }
+  });
+
+  /**
+   * Sections 46/47 -- participation evidence for downstream caregiver/clinical
+   * projections. Counts and conditions only; no derived score, and explicitly
+   * not a clinical interpretation.
+   */
+  app.get("/v1/experiences/participation/:personId", async (req: Request, res: Response) => {
+    const days = Math.max(1, Math.min(90, Number(req.query.days) || 7));
+    try {
+      const summary = await experienceRepo.summariseExperienceParticipation(req.params.personId, days);
+      return res.json({
+        person_id: req.params.personId,
+        window_days: days,
+        ...summary,
+        interpretation_note:
+          "Participation evidence recorded under stated conditions. Not a cognitive score and not a clinical assessment.",
+      });
+    } catch (err: unknown) {
+      console.warn("[Experience] participation summary failed:", err instanceof Error ? err.message : err);
+      return res.json({ person_id: req.params.personId, window_days: days, unavailable: true });
+    }
+  });
+
+
   // ── Vite Middleware (Dev) / Static Serve (Prod) ───────────────────────────
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -2785,6 +3404,11 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
   // Initialize CHW database tables and seed if empty
   initChwDbTables().catch((err) => {
     console.warn("Non-fatal error during CHW database initialization:", err.message);
+  });
+
+  // Seed the two personal-world personas into Neon if person_entities is empty
+  seedPersonasIfEmpty().catch((err) => {
+    console.warn("Non-fatal error during persona seeding:", err.message);
   });
 
   // Initialize Clinical database tables and seed if empty

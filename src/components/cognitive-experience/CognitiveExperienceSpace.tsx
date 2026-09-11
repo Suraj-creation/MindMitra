@@ -10,6 +10,7 @@ import { SaveMemoryStudio } from "./SaveMemoryStudio";
 import { CognitiveTelemetryInspector } from "./CognitiveTelemetryInspector";
 import { PersonalGameContextInspector } from "./PersonalGameContextInspector";
 import { TemporalEngineInspector } from "./TemporalEngineInspector";
+import { ExperienceRenderer } from "./ExperienceRenderer";
 import { GameTrialTelemetry, MemoryItem, ExperienceEpisode } from "../../domain/cognitive-experience";
 import {
   ExperienceEpisodeBuilder,
@@ -17,15 +18,42 @@ import {
   ProgressivePersonalisationLadder,
 } from "../../intelligence/adaptation/index.js";
 import { cognitiveStore } from "../../intelligence/cognitive-engine.js";
+import { api } from "../../lib/api";
+import { flushExperienceEvents, recordExperienceEvent } from "../../lib/experience-telemetry";
+import type { ExperienceSpec } from "../../intelligence/experience/types";
+
+const PERSON_ID = "person:purnima";
 
 interface Props {
   onBackToDay?: () => void;
+  /** Deep link from the companion: open this already-planned experience. */
+  initialExperienceId?: string | null;
+  /** Called once the deep link has been consumed, so it isn't reopened on every render. */
+  onExperienceConsumed?: () => void;
 }
 
-export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
+type DynamicState =
+  | { kind: "loading" }
+  | { kind: "ready"; spec: ExperienceSpec }
+  | { kind: "playing"; spec: ExperienceSpec }
+  | { kind: "unavailable"; message: string };
+
+export const CognitiveExperienceSpace: React.FC<Props> = ({
+  onBackToDay,
+  initialExperienceId,
+  onExperienceConsumed,
+}) => {
   const [activeEngine, setActiveEngine] = useState<
     "none" | "timeline" | "prepare" | "braid" | "garland" | "reminiscence" | "route_builder" | "temporal"
   >("none");
+
+  // ── The dynamic experience region ────────────────────────────────────────
+  // This is the primary surface. Everything below it is the always-available
+  // fallback layer.
+  const [dynamic, setDynamic] = useState<DynamicState>({ kind: "loading" });
+  const [isOffline, setIsOffline] = useState<boolean>(
+    typeof navigator !== "undefined" ? !navigator.onLine : false
+  );
   const [showMemoryStudio, setShowMemoryStudio] = useState<boolean>(false);
   const [showTelemetryInspector, setShowTelemetryInspector] = useState<boolean>(false);
   const [showRetrievalInspector, setShowRetrievalInspector] = useState<boolean>(false);
@@ -61,6 +89,20 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
       });
     }
   }, [activeEngine, companion.updateContext]);
+
+  // Clear the activity context when this surface goes away.
+  //
+  // PersonApp unmounts this component on navigation ({activeSection ===
+  // "activity" && <CognitiveExperienceSpace/>}), and the effect above only
+  // clears active_game when the engine is closed *while still mounted*. Leaving
+  // an activity open and tapping "My Day" therefore pinned active_game -- e.g.
+  // "Route Builder to Daily Market" -- into the companion context permanently,
+  // so every later question was interpreted as being about that activity.
+  useEffect(() => {
+    return () => {
+      companion.updateContext({ active_game: null });
+    };
+  }, [companion.updateContext]);
 
   const handleEngineComplete = async (telemetry: GameTrialTelemetry[], summary: string) => {
     const prevEngine = activeEngine;
@@ -134,6 +176,101 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
     setTimeout(() => {
       setCompletionBanner(null);
     }, 8000);
+  };
+
+  // ── Dynamic experience lifecycle ─────────────────────────────────────────
+
+  const loadDynamic = React.useCallback(
+    async (opts: { specId?: string | null } = {}) => {
+      setDynamic({ kind: "loading" });
+      try {
+        const result = opts.specId
+          ? await api.getExperience(PERSON_ID, opts.specId)
+          : await api.planExperience({ personId: PERSON_ID, trigger: "lets_do_something", language: "en" });
+
+        if (result.status === "ready" && result.spec) {
+          setDynamic({ kind: "ready", spec: result.spec });
+          recordExperienceEvent({
+            person_id: PERSON_ID,
+            spec_id: result.spec.spec_id,
+            template_id: result.spec.template_id,
+            reason: result.spec.reason,
+            event_type: "EXPERIENCE_SUGGESTED",
+            context: { via: opts.specId ? "deep_link" : "lets_do_something" },
+          });
+        } else {
+          setDynamic({
+            kind: "unavailable",
+            message: result.message || "I don't have enough saved information for that one just now.",
+          });
+        }
+      } catch {
+        // Section 39/41: no stack traces, no technical loading language, and no
+        // pretending a cloud-planned experience is available when it isn't.
+        setDynamic({
+          kind: "unavailable",
+          message:
+            typeof navigator !== "undefined" && !navigator.onLine
+              ? "We're offline just now, so I can't prepare something new. The activities below are always here."
+              : "Let's try something else.",
+        });
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (initialExperienceId) {
+      void loadDynamic({ specId: initialExperienceId }).then(() => onExperienceConsumed?.());
+    } else {
+      void loadDynamic();
+    }
+    // Deliberately keyed on the deep link only: opening the page plans once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialExperienceId]);
+
+  useEffect(() => {
+    const onOnline = () => {
+      setIsOffline(false);
+      void flushExperienceEvents();
+    };
+    const onOffline = () => setIsOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    void flushExperienceEvents();
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    };
+  }, []);
+
+  const acceptDynamic = () => {
+    if (dynamic.kind !== "ready") return;
+    recordExperienceEvent({
+      person_id: PERSON_ID,
+      spec_id: dynamic.spec.spec_id,
+      template_id: dynamic.spec.template_id,
+      reason: dynamic.spec.reason,
+      event_type: "EXPERIENCE_ACCEPTED",
+    });
+    setDynamic({ kind: "playing", spec: dynamic.spec });
+  };
+
+  const declineDynamic = () => {
+    if (dynamic.kind !== "ready") return;
+    recordExperienceEvent({
+      person_id: PERSON_ID,
+      spec_id: dynamic.spec.spec_id,
+      template_id: dynamic.spec.template_id,
+      reason: dynamic.spec.reason,
+      event_type: "EXPERIENCE_DECLINED",
+      outcome: "DECLINED",
+    });
+    // "Not now" means not now -- it does not immediately produce another offer.
+    setDynamic({
+      kind: "unavailable",
+      message: "That's fine. The activities below are here whenever you'd like them.",
+    });
   };
 
   const handleAddFlower = (type: string) => {
@@ -311,8 +448,24 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
         </div>
       )}
 
+      {/* ── DYNAMIC PERSONALISED EXPERIENCE (primary surface) ── */}
+      {activeEngine === "none" && dynamic.kind === "playing" && (
+        <ExperienceRenderer
+          spec={dynamic.spec}
+          onExit={() => {
+            void flushExperienceEvents();
+            setCompletionBanner(dynamic.spec.completion.message);
+            setDynamic({
+              kind: "unavailable",
+              message: "Whenever you'd like to do something again, just say so.",
+            });
+            window.setTimeout(() => setCompletionBanner(null), 6000);
+          }}
+        />
+      )}
+
       {/* ── HOME VIEW: PERSONAL COGNITIVE EXPERIENCE SPACE ── */}
-      {activeEngine === "none" && (
+      {activeEngine === "none" && dynamic.kind !== "playing" && (
         <>
           {/* Empathetic Greeting & Rationale Bar */}
           <div className="bg-[#fbf7ee] border border-[#e5dac6] rounded-3xl p-6 sm:p-8 shadow-sm">
@@ -336,7 +489,9 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
                 </div>
               </div>
 
-              {/* Utility Actions */}
+              {/* Utility Actions -- engineering inspector panels (telemetry/retrieval/temporal
+                  debug views) are intentionally not exposed here: this is the person-facing
+                  surface and must stay free of internal system framing. */}
               <div className="flex flex-wrap gap-2.5">
                 <button
                   onClick={() => setShowMemoryStudio(true)}
@@ -344,77 +499,92 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
                 >
                   <span>📷 Preserve a Memory</span>
                 </button>
-                <button
-                  onClick={() => setShowTelemetryInspector(true)}
-                  className="bg-white border border-[#d6cbba] text-[#41382c] text-xs font-medium px-4 py-2.5 rounded-xl hover:bg-[#f8f3ea] transition shadow-sm"
-                >
-                  <span>🔬 Clinical & Intelligence</span>
-                </button>
-                <button
-                  onClick={() => setShowRetrievalInspector(true)}
-                  className="bg-[#faf6f0] border border-[#485935]/40 text-[#334224] text-xs font-medium px-4 py-2.5 rounded-xl hover:bg-[#edf4ea] transition shadow-sm flex items-center gap-1.5"
-                >
-                  <span>⚡ Retrieval & LangGraph</span>
-                </button>
-                <button
-                  onClick={() => setShowTemporalInspector(true)}
-                  className="bg-[#faf6f0] border border-[#b8860b]/50 text-[#7a5900] text-xs font-medium px-4 py-2.5 rounded-xl hover:bg-[#faf2df] transition shadow-sm flex items-center gap-1.5"
-                >
-                  <span>⏳ Temporal & Anchors</span>
-                </button>
               </div>
             </div>
           </div>
 
-          {/* ── FEATURED RECOMMENDED BRAID: PAST, PRESENT & 4 PM VISIT ── */}
-          <div
-            onClick={() => setActiveEngine("braid")}
-            className="cursor-pointer bg-[#faf6f0] border-2 border-[#dfd4c0] hover:border-[#485935] rounded-3xl p-6 sm:p-8 shadow-sm transition duration-200 transform hover:-translate-y-0.5"
+          {/* ── DYNAMIC EXPERIENCE REGION (Sections 1A/2/5) ──────────────────
+              The primary surface. One stable frame; what renders inside it is
+              whatever the Experience Engine composed from this person's own
+              life today. It is not bound to any one activity, and it never
+              shows system framing -- no "AI generated", no template name, no
+              retrieval confidence (Section 38). */}
+          <section
+            aria-label="Something for today"
+            aria-live="polite"
+            className="bg-[#faf6f0] border-2 border-[#dfd4c0] rounded-3xl p-6 sm:p-10 shadow-sm min-h-[260px] flex items-center justify-center"
           >
-            <div className="flex flex-col lg:flex-row gap-6 items-center">
-              <div className="w-full lg:w-1/3 h-56 rounded-2xl overflow-hidden bg-[#e8e0d2] relative shadow-inner">
-                <img
-                  src="/assets/images/vintage_assamese_wedding_1789020439671.jpg"
-                  alt="Experience Braid"
-                  className="w-full h-full object-cover"
-                />
-                <div className="absolute bottom-3 left-3 bg-[#2c2824]/85 text-[#f5ebd7] text-xs px-3 py-1 rounded-full font-serif backdrop-blur-sm">
-                  Recommended by Cognitive Engine
-                </div>
-              </div>
+            {dynamic.kind === "loading" && (
+              <p className="text-lg text-[#6a6154] font-serif">Getting something ready for you…</p>
+            )}
 
-              <div className="w-full lg:w-2/3 space-y-3">
-                <div className="flex items-center gap-2">
-                  <span className="bg-[#9e472a]/15 text-[#732a15] text-xs font-semibold px-2.5 py-0.5 rounded-full uppercase">
-                    Experience Braid
-                  </span>
-                  <span className="text-xs text-[#736a5e]">Multi-Phase Journey</span>
-                </div>
-                <h3 className="text-2xl font-serif font-medium text-[#2c2824]">
-                  Past, Present & Granddaughter Rina's 4:00 PM Visit
-                </h3>
-                <p className="text-sm text-[#595043] leading-relaxed">
-                  A seamless journey starting with your 1968 wedding memories, bringing calm orientation to your sunny courtyard today, and getting ready for Rina's afternoon tea.
+            {dynamic.kind === "unavailable" && (
+              <div className="text-center space-y-5 max-w-xl">
+                <p className="text-lg sm:text-xl text-[#453d33] font-serif leading-relaxed">
+                  {dynamic.message}
                 </p>
-                <div className="pt-2 flex items-center justify-between">
-                  <span className="text-xs font-medium text-[#485935]">
-                    Estimated time: 4 - 6 minutes • Gentle & Soothing
-                  </span>
-                  <button className="bg-[#485935] text-white text-xs font-medium px-5 py-2.5 rounded-xl hover:bg-[#384629] transition">
-                    Begin Journey together →
-                  </button>
+                <button
+                  onClick={() => void loadDynamic()}
+                  disabled={isOffline}
+                  className="min-h-[56px] px-7 py-4 rounded-2xl border-2 border-[#dfd4c0] bg-white text-base font-medium text-[#41382c] hover:border-[#485935] disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2c2824]"
+                >
+                  {isOffline ? "Not available offline" : "See if there's something else"}
+                </button>
+              </div>
+            )}
+
+            {dynamic.kind === "ready" && (
+              <div className="w-full flex flex-col lg:flex-row gap-7 items-center">
+                {dynamic.spec.steps[0]?.media && (
+                  <img
+                    src={dynamic.spec.steps[0].media!.url}
+                    alt={dynamic.spec.steps[0].media!.alt_text}
+                    className="w-full lg:w-1/3 h-56 object-cover rounded-2xl bg-[#e8e0d2]"
+                  />
+                )}
+                <div className="w-full space-y-4">
+                  <h2 className="text-2xl sm:text-3xl font-serif font-medium text-[#2c2824]">
+                    {dynamic.spec.title}
+                  </h2>
+                  <p className="text-base sm:text-lg text-[#595043] leading-relaxed">
+                    {dynamic.spec.invitation_text}
+                  </p>
+                  <div className="flex flex-wrap gap-3 pt-1">
+                    <button
+                      onClick={acceptDynamic}
+                      className="min-h-[56px] px-7 py-4 rounded-2xl bg-[#485935] text-white text-base font-medium hover:bg-[#39472a] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2c2824]"
+                    >
+                      Let's try it
+                    </button>
+                    <button
+                      onClick={declineDynamic}
+                      className="min-h-[56px] px-7 py-4 rounded-2xl border-2 border-[#dfd4c0] bg-white text-base font-medium text-[#41382c] hover:border-[#485935] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2c2824]"
+                    >
+                      Not now
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
+            )}
+          </section>
 
-          {/* ── DETERMINISTIC EXPERIENCE ENGINE SELECTION GRID ── */}
+          {isOffline && (
+            <p role="status" className="text-sm text-[#6a6154] text-center">
+              You're offline. Anything you do is saved here and will sync when the connection returns.
+            </p>
+          )}
+
+
+          {/* ── ALWAYS AVAILABLE: static / offline experiences (Section 4) ──
+              Visually secondary to the dynamic region above, and deliberately
+              unchanged in name and behaviour -- these work with no network and
+              no cloud retrieval. */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xl font-serif font-medium text-[#2c2824]">
-                Choose an Activity Together <span className="text-sm font-normal text-[#736a5e]">(কাৰ্যকলাপ বাছক)</span>
+                Always Available <span className="text-sm font-normal text-[#736a5e]">(সদায় উপলব্ধ)</span>
               </h3>
-              <span className="text-xs text-[#736a5e]">Personal Cognitive Data Layer • Memory Firewall Protected</span>
+              <span className="text-xs text-[#736a5e]">These work even without a connection</span>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

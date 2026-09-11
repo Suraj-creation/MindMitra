@@ -19,7 +19,8 @@ import {
   Send,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { useCompanion } from "../context/CompanionContext";
+import { useCompanion, type ChatMessage } from "../context/CompanionContext";
+import { recordExperienceEvent } from "../lib/experience-telemetry";
 import { CompanionAction } from "../types";
 
 export function FloatingVoiceCompanion() {
@@ -28,6 +29,8 @@ export function FloatingVoiceCompanion() {
     setIsOpen,
     isListening,
     isSpeaking,
+    voiceSessionActive,
+    voiceState,
     liveTranscript,
     turns,
     selectedLanguage,
@@ -45,6 +48,7 @@ export function FloatingVoiceCompanion() {
   const [textInput, setTextInput] = useState("");
   const [showInspector, setShowInspector] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [declinedInvitations, setDeclinedInvitations] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto scroll messages to bottom on new turns
@@ -68,6 +72,41 @@ export function FloatingVoiceCompanion() {
 
   const handleActionClick = (action: CompanionAction) => {
     triggerAction(action);
+  };
+
+  // ── Experience invitations (Sections 6-8/61) ─────────────────────────────
+  // Accepting navigates to the planned activity. It deliberately does NOT
+  // close this panel or stop listening: the voice session has to survive the
+  // hand-off, or "yes" mid-conversation costs the person their microphone.
+  const acceptInvitation = (invitation: NonNullable<ChatMessage["experience_invitation"]>) => {
+    recordExperienceEvent({
+      person_id: "person:purnima",
+      spec_id: invitation.spec_id,
+      template_id: invitation.template_id,
+      event_type: "EXPERIENCE_ACCEPTED",
+      context: { via: "conversation" },
+    });
+    triggerAction({
+      type: "suggest_experience",
+      label: invitation.accept_label,
+      target: "activity",
+      payload: { experience_id: invitation.spec_id },
+      risk: "low",
+    });
+  };
+
+  const declineInvitation = (invitation: NonNullable<ChatMessage["experience_invitation"]>) => {
+    recordExperienceEvent({
+      person_id: "person:purnima",
+      spec_id: invitation.spec_id,
+      template_id: invitation.template_id,
+      event_type: "EXPERIENCE_DECLINED",
+      outcome: "DECLINED",
+      context: { via: "conversation" },
+    });
+    // Recorded so the planner stops re-offering this, and hidden immediately
+    // so "not now" visibly means something.
+    setDeclinedInvitations((prev) => new Set(prev).add(invitation.spec_id));
   };
 
   // Dynamic context suggestions based on page and active game
@@ -230,7 +269,18 @@ export function FloatingVoiceCompanion() {
                     </span>
                   </div>
                   <p className="text-xs text-emerald-200/80 flex items-center gap-1">
-                    <span>{isSpeaking ? "Speaking gently..." : isListening ? "Listening closely..." : "Voice companion ready"}</span>
+                    <span>
+                      {voiceState === "speaking"
+                        ? "Speaking gently..."
+                        : voiceState === "processing"
+                        ? "Thinking..."
+                        : voiceState === "listening"
+                        ? "Listening closely..."
+                        : voiceState === "error"
+                        ? "Voice unavailable"
+                        : "Voice companion ready"}
+                      {voiceSessionActive && voiceState !== "error" ? " · conversation open" : ""}
+                    </span>
                   </p>
                 </div>
               </div>
@@ -337,8 +387,36 @@ export function FloatingVoiceCompanion() {
                       </div>
                     )}
 
+                    {/* Experience invitation (Sections 6-8/38).
+                        Rendered as a pair of equal choices, not a single call
+                        to action: "Not now" has to be as easy to take as
+                        "yes", or it isn't really an invitation. Nothing here
+                        names the engine, the template or the retrieval. */}
+                    {turn.experience_invitation && !declinedInvitations.has(turn.experience_invitation.spec_id) && (
+                      <div className="mt-3 pt-2 border-t border-stone-700/50 space-y-2">
+                        <p className="text-xs text-stone-200">{turn.experience_invitation.text}</p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => acceptInvitation(turn.experience_invitation!)}
+                            className="flex-1 min-h-[40px] py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-medium text-xs flex items-center justify-center gap-1.5 shadow-md transition"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+                            <span>{turn.experience_invitation.accept_label}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => declineInvitation(turn.experience_invitation!)}
+                            className="flex-1 min-h-[40px] py-2 px-3 rounded-xl border border-stone-600 text-stone-200 font-medium text-xs hover:bg-stone-700/50 transition"
+                          >
+                            {turn.experience_invitation.decline_label}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Action Button Attachment */}
-                    {turn.action && (
+                    {turn.action && turn.action.type !== "suggest_experience" && (
                       <div className="mt-3 pt-2 border-t border-stone-700/50">
                         <button
                           type="button"
@@ -429,15 +507,16 @@ export function FloatingVoiceCompanion() {
                 {/* Large Center Voice-to-Voice Microphone Button */}
                 <button
                   type="button"
-                  onClick={isListening ? stopListening : startListening}
+                  onClick={voiceSessionActive ? stopListening : startListening}
                   className={`relative p-3.5 rounded-2xl flex items-center justify-center text-white transition-all transform active:scale-95 shadow-lg ${
-                    isListening
-                      ? "bg-gradient-to-r from-red-600 to-rose-700 ring-4 ring-rose-500/40 animate-pulse"
+                    voiceSessionActive
+                      ? "bg-gradient-to-r from-red-600 to-rose-700 ring-4 ring-rose-500/40" +
+                        (isListening ? " animate-pulse" : "")
                       : "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 ring-2 ring-emerald-400/30"
                   }`}
-                  aria-label={isListening ? "Stop listening" : "Talk with MindMitra"}
+                  aria-label={voiceSessionActive ? "End voice conversation" : "Talk with MindMitra"}
                 >
-                  {isListening ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+                  {voiceSessionActive ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
                 </button>
 
                 {/* Text input form */}

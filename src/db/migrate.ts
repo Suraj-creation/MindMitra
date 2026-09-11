@@ -16,6 +16,24 @@ export async function runSchemaMigration() {
     console.log("Applying cognitive_schema.sql to Neon PostgreSQL...");
     await client.query(sql);
 
+    const schemaV2Path = path.join(process.cwd(), "src/db/cognitive_schema_v2.sql");
+    const sqlV2 = fs.readFileSync(schemaV2Path, "utf-8");
+
+    console.log("Applying cognitive_schema_v2.sql (places, routes, routines, consent, preferences, goals)...");
+    await client.query(sqlV2);
+
+    const schemaV3Path = path.join(process.cwd(), "src/db/cognitive_schema_v3.sql");
+    const sqlV3 = fs.readFileSync(schemaV3Path, "utf-8");
+
+    console.log("Applying cognitive_schema_v3.sql (companion_turns -- conversational Experience Memory)...");
+    await client.query(sqlV3);
+
+    const schemaV4Path = path.join(process.cwd(), "src/db/cognitive_schema_v4.sql");
+    const sqlV4 = fs.readFileSync(schemaV4Path, "utf-8");
+
+    console.log("Applying cognitive_schema_v4.sql (experience_specs + experience_events -- Experience Engine)...");
+    await client.query(sqlV4);
+
     // Also ensure medication_records table exists
     await client.query(`
       CREATE TABLE IF NOT EXISTS medication_records (

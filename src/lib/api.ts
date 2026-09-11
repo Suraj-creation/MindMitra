@@ -7,6 +7,7 @@ import type {
   ObservationResponse,
   PwmReadResponse,
 } from "../types";
+import type { ExperienceSpec } from "../intelligence/experience/types";
 
 export const api = {
   async getVoiceCapability(_token: string, personId: string): Promise<VoiceCapability> {
@@ -174,4 +175,49 @@ export const api = {
     if (!res.ok) throw new Error("Failed to fetch clinical brief");
     return await res.json();
   },
+
+  // ── Experience Engine ──
+  //
+  // planExperience never throws for "nothing to offer": a `no_data` result is
+  // a normal answer the caller must render as a plain sentence, not an error
+  // state (Section 34). Only a transport failure rejects.
+  async planExperience(input: {
+    personId: string;
+    trigger?: "lets_do_something" | "conversation" | "deep_link";
+    conversationText?: string;
+    preferTemplate?: string;
+    language?: "as" | "en";
+    maxChoices?: number;
+  }): Promise<ExperiencePlanResponse> {
+    const res = await fetch("/v1/experiences/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        person_id: input.personId,
+        trigger: input.trigger || "lets_do_something",
+        conversation_text: input.conversationText,
+        prefer_template: input.preferTemplate,
+        language: input.language || "en",
+        max_choices: input.maxChoices,
+      }),
+    });
+    if (!res.ok) throw new Error("Failed to plan experience");
+    return await res.json();
+  },
+
+  async getExperience(personId: string, specId: string): Promise<ExperiencePlanResponse> {
+    const res = await fetch(
+      `/v1/experiences/${encodeURIComponent(specId)}?person_id=${encodeURIComponent(personId)}`
+    );
+    if (!res.ok) {
+      return { status: "no_data", message: "That activity isn't available any more." };
+    }
+    return await res.json();
+  },
 };
+
+export interface ExperiencePlanResponse {
+  status: "ready" | "no_data" | "invalid" | "not_found";
+  spec?: ExperienceSpec;
+  message?: string;
+}

@@ -1,6 +1,19 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
 import { api } from "../lib/api";
 import { CompanionAction, CompanionTurn, RoleSurface, UIContextContract } from "../types";
+import {
+  decideTranscript,
+  relistenDelayMs,
+  shouldRelisten,
+  stateAfterSpeaking,
+  type VoiceState,
+} from "../lib/voice-turn-taking";
+
+// Explicit voice session states (Prompt 4 §31) live in lib/voice-turn-taking.
+// MINIMIZED/CLOSED are not states here -- they are the absence of a session
+// (voiceSessionActive=false), which is what makes "only minimize or stop ends
+// the session" enforceable rather than aspirational.
+export type { VoiceState };
 
 export interface ChatMessage {
   id: string;
@@ -12,6 +25,8 @@ export interface ChatMessage {
   model?: string;
   sources?: Array<{ id?: string; title?: string; text?: string; source_type?: string }>;
   action?: CompanionAction | null;
+  /** A calm, declinable offer of a real planned activity (Sections 6-8). */
+  experience_invitation?: CompanionTurn["experience_invitation"];
   timestamp: string;
 }
 
@@ -20,6 +35,9 @@ interface CompanionContextType {
   setIsOpen: (open: boolean) => void;
   isListening: boolean;
   isSpeaking: boolean;
+  /** True while the continuous voice loop is open; only minimize/stop clears it. */
+  voiceSessionActive: boolean;
+  voiceState: VoiceState;
   liveTranscript: string;
   turns: ChatMessage[];
   selectedLanguage: "as" | "en";
@@ -27,7 +45,9 @@ interface CompanionContextType {
   currentContext: UIContextContract;
   updateContext: (partial: Partial<UIContextContract>) => void;
   sendTurn: (messageOverride?: string) => Promise<void>;
+  /** Opens the continuous voice session (and starts listening). */
   startListening: () => void;
+  /** Ends the continuous voice session. */
   stopListening: () => void;
   cancelSpeaking: () => void;
   triggerAction: (action: CompanionAction) => void;
@@ -61,18 +81,16 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
     {
       id: "initial-greeting",
       role: "assistant",
-      text: "Namaskar Purnima baideu. I am right here beside you in Tezpur. How can I help you feel peaceful and clear right now?",
-      asText: "নমস্কাৰ পূৰ্ণিমা বাইদেউ। মই তেজপুৰত আপোনাৰ কাষতেই আছোঁ। আজি আপোনাৰ দিনটো শান্ত আৰু আনন্দময় কৰিবলৈ মই কিদৰে সহায় কৰিব পাৰোঁ?",
+      // A greeting, not a claim. The previous version asserted where the person
+      // was and who was in the house with them, and carried a fabricated
+      // "verified_family_record" source to back it up -- provenance for a fact
+      // that nothing had actually retrieved.
+      text: "Namaskar. I am right here with you. What would you like to ask?",
+      asText: "নমস্কাৰ। মই আপোনাৰ লগতে আছোঁ।",
       intent: "greeting",
-      provider: "google_gemini",
-      model: "gemini-2.5-flash",
-      sources: [
-        {
-          title: "Ancestral Home in Tezpur",
-          text: "Purnima's family home with daughter Anu in Tezpur, Assam",
-          source_type: "verified_family_record",
-        },
-      ],
+      provider: "deterministic",
+      model: "greeting",
+      sources: [],
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
@@ -83,6 +101,29 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
   const currentAudioElemRef = useRef<HTMLAudioElement | null>(null);
   const actionHandlersRef = useRef<Array<(action: CompanionAction) => void>>([]);
   const animIntervalRef = useRef<any>(null);
+
+  // ── Continuous voice session (Prompt 4 §29-§34) ───────────────────────────
+  //
+  // Voice used to be one-shot: recognition ran with continuous = false, its
+  // onend set isListening(false), and nothing ever re-armed it -- so after a
+  // single answer the microphone was simply dead until the person found and
+  // tapped it again. These refs hold the session so the loop
+  // LISTENING -> PROCESSING -> SPEAKING -> LISTENING can close on itself.
+  //
+  // Refs rather than state because the recognition and audio callbacks are
+  // registered once and would otherwise capture stale values from the render
+  // they were created in.
+  const sessionActiveRef = useRef(false);
+  const recognitionRunningRef = useRef(false);
+  const processingRef = useRef(false);
+  const speakingRef = useRef(false);
+  const spokenTextRef = useRef("");
+  const restartTimerRef = useRef<any>(null);
+  const sendTurnRef = useRef<((m?: string) => Promise<void>) | null>(null);
+  const startRecognitionRef = useRef<(() => void) | null>(null);
+
+  const [voiceSessionActive, setVoiceSessionActive] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
 
   const updateContext = useCallback((partial: Partial<UIContextContract>) => {
     setCurrentContext((prev) => ({
@@ -142,26 +183,62 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
       currentAudioElemRef.current.currentTime = 0;
       currentAudioElemRef.current = null;
     }
+    speakingRef.current = false;
+    spokenTextRef.current = "";
     setIsSpeaking(false);
   }, []);
 
-  // Spoken voice playback via Web Speech API or Sarvam TTS
+  // Re-arm the microphone. This is the step that was missing entirely: the
+  // session stays open across turns, so after speaking (or after a recognition
+  // pass that produced nothing) listening resumes on its own and the person
+  // never has to hunt for the microphone mid-conversation.
+  const scheduleRelisten = useCallback((delayMs = 250) => {
+    if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+    if (!sessionActiveRef.current) return;
+    restartTimerRef.current = setTimeout(() => {
+      const ok = shouldRelisten({
+        sessionActive: sessionActiveRef.current,
+        processing: processingRef.current,
+        recognitionRunning: recognitionRunningRef.current,
+        speaking: speakingRef.current,
+      });
+      if (ok) startRecognitionRef.current?.();
+    }, delayMs);
+  }, []);
+
+  // Spoken voice playback via Sarvam TTS or the Web Speech API.
   const speakResponse = useCallback(
     async (textToSpeak: string, asText?: string) => {
       cancelSpeaking();
-      setIsSpeaking(true);
-
       const targetText = selectedLanguage === "as" && asText ? asText : textToSpeak;
+      speakingRef.current = true;
+      spokenTextRef.current = `${textToSpeak} ${asText || ""}`;
+      setIsSpeaking(true);
+      if (sessionActiveRef.current) setVoiceState("speaking");
 
-      // Try Sarvam TTS for natural Indian voice synthesis first
+      // Whatever ends the utterance -- finished, failed, or barged in on --
+      // hands control back to listening exactly once.
+      let settled = false;
+      const finishSpeaking = () => {
+        if (settled) return;
+        settled = true;
+        speakingRef.current = false;
+        spokenTextRef.current = "";
+        setIsSpeaking(false);
+        setVoiceState(stateAfterSpeaking(sessionActiveRef.current));
+        if (sessionActiveRef.current) scheduleRelisten(150);
+      };
+
       try {
         const langCode = selectedLanguage === "as" ? "as-IN" : "en-IN";
         const base64Audio = await api.synthesizeSpeech(targetText, langCode, "priya");
         if (base64Audio) {
           const audio = new Audio(`data:audio/wav;base64,${base64Audio}`);
           currentAudioElemRef.current = audio;
-          audio.onended = () => setIsSpeaking(false);
+          audio.onended = finishSpeaking;
           audio.onerror = () => fallbackBrowserSpeech(targetText);
+          // Listen through our own speech so "stop" can interrupt it (§32).
+          if (sessionActiveRef.current) scheduleRelisten(400);
           await audio.play();
           return;
         }
@@ -173,7 +250,7 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
 
       function fallbackBrowserSpeech(speech: string) {
         if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-          setIsSpeaking(false);
+          finishSpeaking();
           return;
         }
 
@@ -194,14 +271,15 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
         );
         if (indicVoice) utterance.voice = indicVoice;
 
-        utterance.onend = () => setIsSpeaking(false);
-        utterance.onerror = () => setIsSpeaking(false);
+        utterance.onend = finishSpeaking;
+        utterance.onerror = finishSpeaking;
 
         speechSynthRef.current = utterance;
+        if (sessionActiveRef.current) scheduleRelisten(400);
         window.speechSynthesis.speak(utterance);
       }
     },
-    [cancelSpeaking, selectedLanguage]
+    [cancelSpeaking, scheduleRelisten, selectedLanguage]
   );
 
   // Send turn to backend
@@ -213,6 +291,8 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
       cancelSpeaking();
       setLiveTranscript("");
       setIsListening(false);
+      processingRef.current = true;
+      if (sessionActiveRef.current) setVoiceState("processing");
 
       const userTurn: ChatMessage = {
         id: `user_${Date.now()}`,
@@ -244,14 +324,16 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
           text: turnResult.answer,
           asText: turnResult.asText,
           intent: turnResult.intent,
-          provider: turnResult.provider || "google_gemini",
-          model: turnResult.model || "gemini-2.5-flash",
+          provider: turnResult.provider || "deterministic",
+          model: turnResult.model || "unknown",
           sources: turnResult.sources,
           action: turnResult.action,
+          experience_invitation: turnResult.experience_invitation ?? null,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         };
 
         setTurns((prev) => [...prev, assistantTurn]);
+        processingRef.current = false;
 
         // Speak aloud
         speakResponse(turnResult.answer, turnResult.asText);
@@ -265,36 +347,86 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.warn("Companion turn failed:", errorMsg);
 
+        // A failed request is an UNAVAILABLE state, not a licence to invent.
+        // This fallback used to assert that the person's daughter was in the
+        // house -- a personal claim, made up client-side, at the exact moment
+        // the system had verified nothing at all.
         const fallbackTurn: ChatMessage = {
           id: `fallback_${Date.now()}`,
           role: "assistant",
-          text: "Purnima baideu, you are safe in your home in Tezpur. Daughter Anu is right here in the house with you, and I am right here beside you.",
-          asText: "পূৰ্ণিমা বাইদেউ, আপুনি তেজপুৰৰ নিজৰ ঘৰতে সুৰক্ষিত আছে। অনু কাষতে আছে আৰু মই আপোনাৰ লগতে আছোঁ।",
-          intent: "grounded_reassurance",
+          text: "I can't check that right now. Let's try again in a moment.",
+          asText: "এইমুহূৰ্তত মই এইটো চাব পৰা নাই। অলপ পিছত আকৌ চাওঁ।",
+          intent: "unavailable",
           provider: "deterministic",
-          model: "deterministic_resilience_v1",
+          model: "client_fallback",
+          sources: [],
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         };
         setTurns((prev) => [...prev, fallbackTurn]);
+        processingRef.current = false;
         speakResponse(fallbackTurn.text, fallbackTurn.asText);
+      } finally {
+        processingRef.current = false;
       }
     },
     [cancelSpeaking, currentContext, liveTranscript, selectedLanguage, speakResponse, turns]
   );
 
-  // Web Speech Recognition handler
-  const startListening = useCallback(() => {
-    cancelSpeaking();
+  // Handlers registered on the recognition instance run for the life of the
+  // session, so they read the latest sendTurn through a ref instead of closing
+  // over whichever render created them.
+  useEffect(() => {
+    sendTurnRef.current = sendTurn;
+  }, [sendTurn]);
 
+  // ── Recognition loop ──────────────────────────────────────────────────────
+
+  const handleFinalTranscript = useCallback(
+    (finalTranscript: string) => {
+      const said = finalTranscript.trim();
+      const decision = decideTranscript(said, {
+        speaking: speakingRef.current,
+        currentlySpeaking: spokenTextRef.current,
+      });
+
+      if (decision === "ignore_echo") {
+        // The assistant hearing itself -- discard and keep listening.
+        setLiveTranscript("");
+        return;
+      }
+
+      if (decision === "obey_and_relisten") {
+        // A bare "stop" is a command, not a question: honour it and hand the
+        // microphone straight back without generating a reply.
+        cancelSpeaking();
+        setLiveTranscript("");
+        setVoiceState("listening");
+        scheduleRelisten(150);
+        return;
+      }
+
+      if (decision === "interrupt_and_send") {
+        // Genuine barge-in: cut the speech off now rather than waiting for it.
+        cancelSpeaking();
+      }
+
+      setLiveTranscript(said);
+      sendTurnRef.current?.(said);
+    },
+    [cancelSpeaking, scheduleRelisten]
+  );
+
+  /** Low-level: start one recognition pass. Idempotent. */
+  const startRecognition = useCallback(() => {
     if (typeof window === "undefined") return;
+    if (recognitionRunningRef.current) return;
 
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
       console.warn("Web Speech API not supported in this browser.");
-      // Simulated voice prompt for demo
-      setLiveTranscript("What is happening today, and when is tea?");
+      setVoiceState("error");
       return;
     }
 
@@ -305,7 +437,9 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
       recognition.lang = selectedLanguage === "as" ? "as-IN" : "en-IN";
 
       recognition.onstart = () => {
+        recognitionRunningRef.current = true;
         setIsListening(true);
+        if (!speakingRef.current) setVoiceState("listening");
         setLiveTranscript("");
       };
 
@@ -313,45 +447,101 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
         let interim = "";
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           if (event.results[i].isFinal) {
-            const finalTranscript = event.results[i][0].transcript;
-            setLiveTranscript(finalTranscript);
-            // Auto send on final utterance
-            setTimeout(() => {
-              sendTurn(finalTranscript);
-            }, 300);
+            handleFinalTranscript(event.results[i][0].transcript);
           } else {
             interim += event.results[i][0].transcript;
-            setLiveTranscript(interim);
+            if (!speakingRef.current) setLiveTranscript(interim);
           }
         }
       };
 
       recognition.onerror = (event: any) => {
-        console.warn("Speech recognition error:", event.error);
-        setIsListening(false);
+        // "no-speech" and "aborted" are ordinary in a long-running session --
+        // a quiet pause must not end the conversation.
+        if (event.error !== "no-speech" && event.error !== "aborted") {
+          console.warn("Speech recognition error:", event.error);
+        }
+        if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+          sessionActiveRef.current = false;
+          setVoiceSessionActive(false);
+          setVoiceState("error");
+        }
       };
 
       recognition.onend = () => {
+        recognitionRunningRef.current = false;
         setIsListening(false);
+        // The loop closes here: unless the session was deliberately ended,
+        // listening starts again on its own.
+        if (sessionActiveRef.current) {
+          scheduleRelisten(relistenDelayMs({ speaking: speakingRef.current }));
+        } else {
+          setVoiceState("idle");
+        }
       };
 
       recognitionRef.current = recognition;
       recognition.start();
     } catch (err) {
+      // start() throws if an instance is somehow already running; recover by
+      // retrying on the normal cadence instead of dropping the session.
+      recognitionRunningRef.current = false;
       console.warn("Could not start speech recognition:", err);
-      setIsListening(false);
+      if (sessionActiveRef.current) scheduleRelisten(600);
     }
-  }, [cancelSpeaking, selectedLanguage, sendTurn]);
+  }, [handleFinalTranscript, scheduleRelisten, selectedLanguage]);
 
+  useEffect(() => {
+    startRecognitionRef.current = startRecognition;
+  }, [startRecognition]);
+
+  /** Opens the continuous voice session. It stays open until minimize/stop. */
+  const startListening = useCallback(() => {
+    cancelSpeaking();
+    sessionActiveRef.current = true;
+    setVoiceSessionActive(true);
+    setVoiceState("listening");
+    startRecognition();
+  }, [cancelSpeaking, startRecognition]);
+
+  /** Ends the continuous voice session (the only thing that does). */
   const stopListening = useCallback(() => {
+    sessionActiveRef.current = false;
+    setVoiceSessionActive(false);
+    if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
-      } catch (err) {
-        // ignore
+        recognitionRef.current.abort?.() ?? recognitionRef.current.stop();
+      } catch {
+        // already stopped
       }
     }
+    recognitionRunningRef.current = false;
     setIsListening(false);
+    setLiveTranscript("");
+    setVoiceState(speakingRef.current ? "speaking" : "idle");
+  }, []);
+
+  // Minimizing or closing the panel ends the session and the speech with it
+  // (§34) -- the microphone must never stay live behind a closed panel.
+  useEffect(() => {
+    if (!isOpen && sessionActiveRef.current) {
+      stopListening();
+      cancelSpeaking();
+    }
+  }, [isOpen, stopListening, cancelSpeaking]);
+
+  // Tear down on unmount so no timer or recognition instance outlives the app.
+  useEffect(() => {
+    return () => {
+      sessionActiveRef.current = false;
+      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+      try {
+        recognitionRef.current?.abort?.();
+      } catch {
+        // ignore
+      }
+    };
   }, []);
 
   const clearHistory = useCallback(() => {
@@ -366,6 +556,8 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
         setIsOpen,
         isListening,
         isSpeaking,
+        voiceSessionActive,
+        voiceState,
         liveTranscript,
         turns,
         selectedLanguage,
