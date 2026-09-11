@@ -1,4 +1,5 @@
 export type RoleSurface =
+  | "onboarding"
   | "person"
   | "caregiver"
   | "asha"
@@ -6,6 +7,17 @@ export type RoleSurface =
   | "demos"
   | "prototypes"
   | "assets";
+
+export interface OnboardingProfile {
+  name: string;
+  honorific: string;
+  workBackground: string;
+  preferredLanguage: string;
+  joys: string[];
+  explanationStyle: string[];
+  avoidances: string[];
+  completedAt?: string;
+}
 
 export type PersonSection = "day" | "life" | "activity" | "people" | "help";
 

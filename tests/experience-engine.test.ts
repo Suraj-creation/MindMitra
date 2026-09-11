@@ -6,7 +6,7 @@
 // seeded (not name-swapped clones) so "personalisation" means the experiences
 // actually differ, not that a name was substituted.
 
-import test from "node:test";
+import test, { describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { queryDb } from "../src/db/neon";
 import { planExperience, templatesForConversation } from "../src/intelligence/experience/planner";
@@ -18,6 +18,9 @@ import * as experienceRepo from "../src/db/experience-repository";
 import { classifyIntent } from "../src/intelligence/context/intent-classifier";
 import type { ExperienceSpec } from "../src/intelligence/experience/types";
 
+const hasDb = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED);
+
+describe("Experience Engine (Neon)", { skip: !hasDb ? "Neon Database is not configured (requires DATABASE_URL)" : false }, () => {
 const A = "person:test_xp_asha";      // photos, people, memories, places
 const B = "person:test_xp_bimal";     // no media at all; different family, place, routine
 const EMPTY = "person:test_xp_empty"; // nothing recorded
@@ -46,7 +49,7 @@ function at(hoursFromNow: number): string {
   return new Date(Date.now() + hoursFromNow * 3600_000).toISOString();
 }
 
-test.before(async () => {
+before(async () => {
   await wipe();
 
   // ── Person A: Asha. Photographs, a family, places, a visit that happened. ──
@@ -669,4 +672,5 @@ test("A missing media object yields no photograph rather than a stand-in image",
 
   const result = await planExperience({ personId: B, trigger: "lets_do_something", preferTemplate: "PHOTO_MEMORY_RECALL", language: "en" });
   assert.equal(result.status, "no_data", "a photo activity with no resolvable photo must not be offered at all");
+});
 });

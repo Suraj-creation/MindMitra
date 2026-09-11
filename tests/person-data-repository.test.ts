@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { queryDb } from "../src/db/neon";
 import * as repo from "../src/db/person-data-repository";
@@ -8,10 +8,13 @@ import * as repo from "../src/db/person-data-repository";
 // personas (person:purnima, person:nekombo). Every row created here is
 // cleaned up in `after`, so re-running the suite never accumulates state.
 
+const hasDb = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED);
+
+describe("Person Data Repository (Neon)", { skip: !hasDb ? "Neon Database is not configured (requires DATABASE_URL)" : false }, () => {
 const PERSON_A = "person:test_isolation_a";
 const PERSON_B = "person:test_isolation_b";
 
-test.after(async () => {
+after(async () => {
   for (const personId of [PERSON_A, PERSON_B]) {
     await queryDb("DELETE FROM memory_media WHERE memory_id IN (SELECT id FROM memory_items WHERE person_id = $1)", [personId]);
     await queryDb("DELETE FROM memory_items WHERE person_id = $1", [personId]);
@@ -191,4 +194,5 @@ test("Memory Firewall audit log: every access attempt is recorded with actor, pu
   assert.equal(rows[0].decision, "ALLOW");
   assert.equal(rows[0].actor_role, "person");
   assert.equal(rows[0].purpose, "memory");
+});
 });

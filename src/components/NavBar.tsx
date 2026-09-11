@@ -21,7 +21,7 @@ interface NavBarProps {
 export const NavBar: React.FC<NavBarProps> = ({ currentSurface, onSelectSurface }) => {
   const [showInfraModal, setShowInfraModal] = useState(false);
 
-  if (currentSurface === "person") {
+  if (currentSurface === "person" || currentSurface === "onboarding") {
     return null;
   }
 
@@ -51,8 +51,24 @@ export const NavBar: React.FC<NavBarProps> = ({ currentSurface, onSelectSurface 
         {/* Navigation Tabs */}
         <nav className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto py-1">
           <button
+            onClick={() => onSelectSurface("onboarding")}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 transition-all whitespace-nowrap ${
+              currentSurface === "onboarding"
+                ? "bg-[#1a3826] text-white shadow-xs font-semibold"
+                : "text-[#424843] hover:text-[#1d1c16] hover:bg-[#ece8df]"
+            }`}
+          >
+            <Sparkles size={16} />
+            <span>Onboarding</span>
+          </button>
+
+          <button
             onClick={() => onSelectSurface("person")}
-            className="px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 transition-all whitespace-nowrap text-[#424843] hover:text-[#1d1c16] hover:bg-[#ece8df]"
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 transition-all whitespace-nowrap ${
+              currentSurface === "person"
+                ? "bg-[#1a3826] text-white shadow-xs font-semibold"
+                : "text-[#424843] hover:text-[#1d1c16] hover:bg-[#ece8df]"
+            }`}
           >
             <User size={16} />
             <span>Person App (Landing)</span>

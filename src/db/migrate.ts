@@ -34,6 +34,13 @@ export async function runSchemaMigration() {
     console.log("Applying cognitive_schema_v4.sql (experience_specs + experience_events -- Experience Engine)...");
     await client.query(sqlV4);
 
+    const schemaV5Path = path.join(process.cwd(), "src/db/cognitive_schema_v5.sql");
+    if (fs.existsSync(schemaV5Path)) {
+      const sqlV5 = fs.readFileSync(schemaV5Path, "utf-8");
+      console.log("Applying cognitive_schema_v5.sql (onboarding_profiles -- dynamic onboarding persistence)...");
+      await client.query(sqlV5);
+    }
+
     // Also ensure medication_records table exists
     await client.query(`
       CREATE TABLE IF NOT EXISTS medication_records (

@@ -13,7 +13,7 @@
 // activity. These tests pin down both halves, plus the retrieval that makes a
 // real answer possible at all.
 
-import test from "node:test";
+import test, { describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { queryDb } from "../src/db/neon";
 import { classifyIntent } from "../src/intelligence/context/intent-classifier";
@@ -27,6 +27,9 @@ import {
 import { buildDeterministicAnswer } from "../src/intelligence/context/companion-responder";
 import * as repo from "../src/db/person-data-repository";
 
+const hasDb = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED);
+
+describe("Grounded Conversation (Neon)", { skip: !hasDb ? "Neon Database is not configured (requires DATABASE_URL)" : false }, () => {
 const FULL_DAY = "person:test_gc_full";
 const EMPTY_DAY = "person:test_gc_empty";
 const OTHER = "person:test_gc_other";
@@ -54,7 +57,7 @@ function minutesLeftInDay(): number {
 }
 const AHEAD_TODAY_IS_POSSIBLE = minutesLeftInDay() > 45;
 
-test.before(async () => {
+before(async () => {
   await cleanup();
 
   // ── A person with a real, mixed day: something done, something still ahead,
@@ -102,7 +105,7 @@ test.before(async () => {
   );
 });
 
-test.after(cleanup);
+after(cleanup);
 
 async function cleanup() {
   const ids = [FULL_DAY, EMPTY_DAY, OTHER];
@@ -551,3 +554,5 @@ test("The classifier's relationship vocabulary matches the one the responder res
     assert.equal(c.mode, "PERSONAL");
   }
 });
+});
+

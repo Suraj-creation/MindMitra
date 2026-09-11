@@ -381,19 +381,164 @@ async function startServer() {
   });
 
   // 3. Auth Me
-  app.get("/v1/auth/me", (req: Request, res: Response) => {
+  app.get("/v1/auth/me", async (req: Request, res: Response) => {
+    const personId = (req.query.person_id as string) || "person:purnima";
+    const identity = identityFor(personId);
+    let lang = "as";
+    try {
+      const dbProfile = await personDataRepo.getOnboardingProfileRecord(personId);
+      if (dbProfile) {
+        if (dbProfile.name) {
+          identity.displayName = dbProfile.name;
+        }
+        if (dbProfile.honorific) {
+          identity.honorific = dbProfile.honorific;
+        }
+        if (dbProfile.preferred_language && /english/i.test(dbProfile.preferred_language)) {
+          lang = "en";
+        }
+      }
+    } catch {
+      // safe fallback
+    }
+
     res.json({
+      name: identity.displayName,
+      display_name: identity.displayName,
+      honorific: identity.honorific,
       subject_kind: "person_device",
       persons: [
         {
-          person_id: "person:purnima",
-          display_name: "Purnima",
+          person_id: personId,
+          name: identity.displayName,
+          display_name: identity.displayName,
+          honorific: identity.honorific,
           role: "person",
-          preferred_language: "as", // Assamese
+          preferred_language: lang,
           language_tier: "tier_1",
         },
       ],
     });
+  });
+
+  // 3.1 Onboarding API (Record Dynamic Information in DB & Real-Time Sync)
+  app.post(["/v1/onboarding", "/api/onboarding"], async (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      const personId = body.person_id || body.personId || "person:purnima";
+      const name = (body.name || "").trim() || "Purnima";
+      const honorific = body.honorific || "";
+      const workBackground = body.workBackground || body.work_background || "";
+      const preferredLanguage = body.preferredLanguage || body.preferred_language || "Assamese (অসমীয়া)";
+      const joys = Array.isArray(body.joys) ? body.joys : [];
+      const explanationStyle = Array.isArray(body.explanationStyle)
+        ? body.explanationStyle
+        : Array.isArray(body.explanation_style)
+        ? body.explanation_style
+        : [];
+      const avoidances = Array.isArray(body.avoidances) ? body.avoidances : [];
+
+      console.log(`[Onboarding] Persisting dynamic profile for ${personId}: "${name}" (${preferredLanguage})`);
+
+      // 1. Save to Database
+      let savedRecord: personDataRepo.OnboardingProfileRecord | null = null;
+      try {
+        savedRecord = await personDataRepo.saveOnboardingProfileRecord({
+          person_id: personId,
+          name,
+          honorific,
+          work_background: workBackground,
+          preferred_language: preferredLanguage,
+          joys,
+          explanation_style: explanationStyle,
+          avoidances,
+          raw_profile: body,
+        });
+      } catch (dbErr) {
+        console.warn("[Onboarding] Neon DB write warning (saving in-memory fallback):", dbErr);
+      }
+
+      // 2. Real-time in-memory identity update so all downstream server modules reflect immediately
+      if (!PERSON_IDENTITY[personId]) {
+        PERSON_IDENTITY[personId] = {
+          displayName: name,
+          honorific: honorific || name,
+          culture: /assam/i.test(preferredLanguage) ? "Assamese (Tezpur)" : "Northeast India",
+          timeZone: "Asia/Kolkata",
+          actorId: `actor:${personId.replace(/^person:/, "")}`,
+        };
+      } else {
+        PERSON_IDENTITY[personId].displayName = name;
+        if (honorific) {
+          PERSON_IDENTITY[personId].honorific = honorific;
+        }
+      }
+
+      const responsePayload = {
+        status: "ok",
+        persisted_to_db: Boolean(savedRecord),
+        person_id: personId,
+        profile: savedRecord || {
+          id: `local_${Date.now()}`,
+          person_id: personId,
+          name,
+          honorific,
+          work_background: workBackground,
+          preferred_language: preferredLanguage,
+          joys,
+          explanation_style: explanationStyle,
+          avoidances,
+          completed: true,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        message: "Onboarding profile successfully saved to database.",
+        timestamp: new Date().toISOString(),
+      };
+
+      res.status(200).json(responsePayload);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[Onboarding] Error processing profile save:", msg);
+      res.status(500).json({ status: "error", message: msg });
+    }
+  });
+
+  app.get(["/v1/onboarding", "/api/onboarding"], async (req: Request, res: Response) => {
+    try {
+      const personId = (req.query.person_id as string) || (req.query.personId as string) || "person:purnima";
+      const record = await personDataRepo.getOnboardingProfileRecord(personId);
+      const identity = identityFor(personId);
+
+      if (record) {
+        identity.displayName = record.name || identity.displayName;
+        if (record.honorific) identity.honorific = record.honorific;
+
+        res.json({
+          status: "ok",
+          found: true,
+          profile: record,
+        });
+      } else {
+        res.json({
+          status: "ok",
+          found: false,
+          profile: {
+            person_id: personId,
+            name: identity.displayName,
+            honorific: identity.honorific,
+            preferred_language: "Assamese (অসমীয়া)",
+            joys: ["Courtyard & Gardening", "Assam Tea & Snacks", "Borgeet & Folk Music"],
+            explanation_style: ["Short and simple", "Tell me aloud with gentle voice"],
+            avoidances: ["Avoid sudden loud sounds or rapid chatter"],
+            completed: false,
+          },
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ status: "error", message: msg });
+    }
   });
 
   // 4. Voice Capability

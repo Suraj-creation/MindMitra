@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { queryDb } from "../src/db/neon";
 import { buildPersonExperienceProjection, buildEvidencePack, checkGrounding } from "../src/intelligence/context/personal-context-engine";
@@ -6,12 +6,7 @@ import { classifyIntent } from "../src/intelligence/context/intent-classifier";
 import { buildDeterministicAnswer } from "../src/intelligence/context/companion-responder";
 
 const TEST_PERSON = "person:test_context_engine";
-
-test.after(async () => {
-  await queryDb("DELETE FROM future_events WHERE person_id = $1", [TEST_PERSON]);
-  await queryDb("DELETE FROM person_entities WHERE person_id = $1", [TEST_PERSON]);
-  await queryDb("DELETE FROM relationships WHERE person_id = $1", [TEST_PERSON]);
-});
+const hasDb = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED);
 
 // ── §27 smoke tests: the bounded intent classifier resolves the exact utterances ──
 
@@ -96,6 +91,13 @@ test("Grounding check: still catches a fabricated name even mid-sentence after a
 
 // ── Personal Context Engine: real data in, real isolation, real temporal validity ──
 
+describe("Personal Context Engine (Neon)", { skip: !hasDb ? "Neon Database is not configured (requires DATABASE_URL)" : false }, () => {
+after(async () => {
+  await queryDb("DELETE FROM future_events WHERE person_id = $1", [TEST_PERSON]);
+  await queryDb("DELETE FROM person_entities WHERE person_id = $1", [TEST_PERSON]);
+  await queryDb("DELETE FROM relationships WHERE person_id = $1", [TEST_PERSON]);
+});
+
 test("Personal Context Engine: projection reflects real seeded data, not hardcoded facts", async () => {
   const projection = await buildPersonExperienceProjection("person:purnima", { page: "day" });
   assert.ok(projection.people.some((p) => p.name === "Rina"), "Purnima's real people include Rina");
@@ -164,3 +166,5 @@ test("Deterministic responder: uses the real next event when one exists, never a
   assert.match(result.answer, /Test Real Visit/);
   assert.doesNotMatch(result.answer, /4:00 PM|5:00 PM|Rina/, "must not leak the old hardcoded demo facts");
 });
+});
+

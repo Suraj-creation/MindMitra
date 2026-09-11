@@ -7,12 +7,14 @@ import { ClinicalBridge } from "./components/ClinicalBridge";
 import { DemosView } from "./components/DemosView";
 import { PrototypesView } from "./components/PrototypesView";
 import { AssetStudioView } from "./components/AssetStudioView";
+import { BrahmaputraOnboarding } from "./components/onboarding/BrahmaputraOnboarding";
 import { CompanionProvider, useCompanion } from "./context/CompanionContext";
 import { FloatingVoiceCompanion } from "./components/FloatingVoiceCompanion";
-import type { RoleSurface } from "./types";
+import type { RoleSurface, OnboardingProfile } from "./types";
 
 function AppContent() {
-  const [currentSurface, setCurrentSurface] = useState<RoleSurface>("person");
+  const [currentSurface, setCurrentSurface] = useState<RoleSurface>("onboarding");
+  const [completedProfile, setCompletedProfile] = useState<OnboardingProfile | null>(null);
   const companion = useCompanion();
 
   useEffect(() => {
@@ -26,8 +28,16 @@ function AppContent() {
     <div className="min-h-screen bg-[--color-bg] text-[--color-text] flex flex-col font-sans selection:bg-[--color-highlight] selection:text-[--color-text]">
       <NavBar currentSurface={currentSurface} onSelectSurface={setCurrentSurface} />
 
-      {currentSurface === "person" ? (
-        <PersonApp onSelectSurface={setCurrentSurface} />
+      {currentSurface === "onboarding" ? (
+        <BrahmaputraOnboarding
+          onComplete={(profile) => {
+            setCompletedProfile(profile);
+            setCurrentSurface("person");
+          }}
+          onSelectSurface={setCurrentSurface}
+        />
+      ) : currentSurface === "person" ? (
+        <PersonApp onSelectSurface={setCurrentSurface} initialProfile={completedProfile} />
       ) : currentSurface === "clinical" ? (
         <div className="flex-1 w-full flex flex-col bg-[#F6F1EA]">
           <ClinicalBridge onSelectSurface={setCurrentSurface} />

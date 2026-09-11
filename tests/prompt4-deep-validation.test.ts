@@ -6,6 +6,9 @@ import { classifyIntent } from "../src/intelligence/context/intent-classifier";
 import { buildDeterministicAnswer } from "../src/intelligence/context/companion-responder";
 import * as repo from "../src/db/person-data-repository";
 
+const hasDb = Boolean(process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED);
+const dbSkip = !hasDb ? "Neon Database is not configured (requires DATABASE_URL)" : false;
+
 // ── §28 golden utterances (extends the Prompt 3 set with Prompt 4's additions) ──
 
 test("Golden utterances: the Prompt 4 §28 additions classify to sensible bounded intents", () => {
@@ -48,7 +51,7 @@ test("Retrieval planner: crisis intent retrieves the bare minimum (speed over co
   assert.equal(plan.preferences, false);
 });
 
-test("Retrieval evaluation end-to-end: a PEOPLE-intent projection's memories/places arrays are genuinely empty, not just unused", async () => {
+test("Retrieval evaluation end-to-end: a PEOPLE-intent projection's memories/places arrays are genuinely empty, not just unused", { skip: dbSkip }, async () => {
   const plan = planRetrieval("PEOPLE");
   const projection = await buildPersonExperienceProjection("person:purnima", { page: "people", plan });
   assert.ok(projection.people.length > 0, "people must still be populated");
@@ -58,7 +61,7 @@ test("Retrieval evaluation end-to-end: a PEOPLE-intent projection's memories/pla
 
 // ── §30 personalisation evaluation: two real personas, not name-swapped clones ──
 
-test("Personalisation evaluation: Purnima and Nekombo produce substantively different evidence for the same question", async () => {
+test("Personalisation evaluation: Purnima and Nekombo produce substantively different evidence for the same question", { skip: dbSkip }, async () => {
   const plan = planRetrieval("ORIENTATION");
   const purnimaProjection = await buildPersonExperienceProjection("person:purnima", { page: "day", plan });
   const nekomboProjection = await buildPersonExperienceProjection("person:nekombo", { page: "day", plan });
@@ -82,7 +85,7 @@ test("Personalisation evaluation: Purnima and Nekombo produce substantively diff
 
 // ── §31 adaptation evaluation: same intent, different available evidence, honest answers ──
 
-test("Adaptation evaluation: the deterministic responder never fabricates a shared fact across two different personas", async () => {
+test("Adaptation evaluation: the deterministic responder never fabricates a shared fact across two different personas", { skip: dbSkip }, async () => {
   const plan = planRetrieval("ORIENTATION");
   for (const personId of ["person:purnima", "person:nekombo"]) {
     const projection = await buildPersonExperienceProjection(personId, { page: "day", plan });
@@ -130,7 +133,7 @@ test("Action safety: call_contact actions require confirmation; navigation/media
 
 // ── §9 repetition-aware interaction ──
 
-test("Repetition detection: the same question asked twice is recognized without being narrated in the answer templates", async () => {
+test("Repetition detection: the same question asked twice is recognized without being narrated in the answer templates", { skip: dbSkip }, async () => {
   const turn1: repo.CompanionTurnRecord = {
     id: "t1", person_id: "person:test_repeat", message: "When is Rina coming?", answer: "soon",
     intent: "day_orientation", classified_intent: "TEMPORAL", path: "deterministic", provider: "deterministic",
@@ -152,7 +155,7 @@ test("Repetition detection: the same question asked twice is recognized without 
 
 // ── §26 Experience Memory persistence ──
 
-test("Experience Memory: a companion turn persists and is retrievable as this person's own recent history", async () => {
+test("Experience Memory: a companion turn persists and is retrievable as this person's own recent history", { skip: dbSkip }, async () => {
   const personId = "person:test_experience_memory";
   await repo.recordCompanionTurn({
     person_id: personId,
@@ -181,7 +184,7 @@ test("Experience Memory: a companion turn persists and is retrievable as this pe
 
 // ── §32 security evaluation: attempt cross-person and unauthorized access directly against the backend ──
 
-test("Security evaluation: cannot retrieve another person's memories, people, or events through any context-engine entry point", async () => {
+test("Security evaluation: cannot retrieve another person's memories, people, or events through any context-engine entry point", { skip: dbSkip }, async () => {
   const [purnima, nekombo] = await Promise.all([
     buildPersonExperienceProjection("person:purnima", { page: "day" }),
     buildPersonExperienceProjection("person:nekombo", { page: "day" }),
@@ -207,7 +210,7 @@ test("Security evaluation: the person context engine never touches caregiver/CHW
   }
 });
 
-test("Security evaluation: revoked consent narrows the projection instead of erroring the whole request", async () => {
+test("Security evaluation: revoked consent narrows the projection instead of erroring the whole request", { skip: dbSkip }, async () => {
   const personId = "person:test_consent_security";
   await repo.grantConsent({ person_id: personId, purpose: "personalisation", category: "life_story_memory", granted_to_role: "primary_caregiver", granted_by: "test" });
   let active = await repo.hasActiveConsent(personId, "personalisation", "life_story_memory");
@@ -226,7 +229,7 @@ test("Security evaluation: revoked consent narrows the projection instead of err
 // "When will Rina call me?" used to answer with whichever event came first
 // chronologically (the tea reminder), not the event actually about Rina.
 
-test("Retrieval precision: a question naming a specific person returns THAT person's event, not just the next one overall", async () => {
+test("Retrieval precision: a question naming a specific person returns THAT person's event, not just the next one overall", { skip: dbSkip }, async () => {
   const personId = "person:test_event_precision";
   await queryDb(
     `INSERT INTO person_entities (id, person_id, name, display_name, relationship_to_person, verification_status)

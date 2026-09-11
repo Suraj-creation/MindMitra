@@ -699,3 +699,172 @@ export async function listMemoryPeopleLinks(personId: string): Promise<MemoryPer
     [personId]
   );
 }
+
+// ── Onboarding & Elder Identity Profile (Dynamic Onboarding) ──────────────────
+export interface OnboardingProfileRecord {
+  id: string;
+  person_id: string;
+  name: string;
+  honorific: string | null;
+  work_background: string | null;
+  preferred_language: string;
+  joys: string[];
+  explanation_style: string[];
+  avoidances: string[];
+  raw_profile?: Record<string, any>;
+  completed: boolean;
+  completed_at: string;
+  updated_at: string;
+}
+
+const LOCAL_ONBOARDING_PROFILES = new Map<string, OnboardingProfileRecord>();
+
+export async function saveOnboardingProfileRecord(input: {
+  person_id: string;
+  name: string;
+  honorific?: string;
+  work_background?: string;
+  preferred_language: string;
+  joys: string[];
+  explanation_style: string[];
+  avoidances: string[];
+  raw_profile?: Record<string, any>;
+}): Promise<OnboardingProfileRecord> {
+  const id = newId("onb");
+  const joysJson = JSON.stringify(input.joys || []);
+  const explJson = JSON.stringify(input.explanation_style || []);
+  const avoidJson = JSON.stringify(input.avoidances || []);
+  const rawJson = JSON.stringify(input.raw_profile || {});
+
+  const fallbackRecord: OnboardingProfileRecord = {
+    id,
+    person_id: input.person_id,
+    name: input.name,
+    honorific: input.honorific || null,
+    work_background: input.work_background || null,
+    preferred_language: input.preferred_language || "Assamese (অসমীয়া)",
+    joys: input.joys || [],
+    explanation_style: input.explanation_style || [],
+    avoidances: input.avoidances || [],
+    raw_profile: input.raw_profile || {},
+    completed: true,
+    completed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  // Always retain in resilient local store
+  LOCAL_ONBOARDING_PROFILES.set(input.person_id, fallbackRecord);
+
+  try {
+    // Ensure table exists defensively
+    await queryDb(`
+      CREATE TABLE IF NOT EXISTS onboarding_profiles (
+        id VARCHAR(64) PRIMARY KEY,
+        person_id VARCHAR(64) NOT NULL UNIQUE,
+        name VARCHAR(128) NOT NULL,
+        honorific VARCHAR(128),
+        work_background VARCHAR(128),
+        preferred_language VARCHAR(128) NOT NULL DEFAULT 'Assamese (অসমীয়া)',
+        joys JSONB NOT NULL DEFAULT '[]'::jsonb,
+        explanation_style JSONB NOT NULL DEFAULT '[]'::jsonb,
+        avoidances JSONB NOT NULL DEFAULT '[]'::jsonb,
+        raw_profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+        completed BOOLEAN NOT NULL DEFAULT TRUE,
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    const rows = await queryDb<OnboardingProfileRecord>(
+      `INSERT INTO onboarding_profiles
+        (id, person_id, name, honorific, work_background, preferred_language, joys, explanation_style, avoidances, raw_profile, completed, completed_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, true, NOW(), NOW())
+       ON CONFLICT (person_id) DO UPDATE SET
+         name = EXCLUDED.name,
+         honorific = EXCLUDED.honorific,
+         work_background = EXCLUDED.work_background,
+         preferred_language = EXCLUDED.preferred_language,
+         joys = EXCLUDED.joys,
+         explanation_style = EXCLUDED.explanation_style,
+         avoidances = EXCLUDED.avoidances,
+         raw_profile = EXCLUDED.raw_profile,
+         completed = true,
+         updated_at = NOW()
+       RETURNING *`,
+      [
+        id,
+        input.person_id,
+        input.name,
+        input.honorific || null,
+        input.work_background || null,
+        input.preferred_language || "Assamese (অসমীয়া)",
+        joysJson,
+        explJson,
+        avoidJson,
+        rawJson,
+      ]
+    );
+
+    if (rows && rows[0]) {
+      LOCAL_ONBOARDING_PROFILES.set(input.person_id, rows[0]);
+    }
+
+    // Synchronize with preferences table (dimensions: language, content, assistance)
+    try {
+      if (input.preferred_language) {
+        await recordPreference({
+          person_id: input.person_id,
+          dimension: "language",
+          value: { primary: input.preferred_language },
+          evidence_source: "person_stated",
+          confidence: 1.0,
+        });
+      }
+      if (input.joys && input.joys.length > 0) {
+        await recordPreference({
+          person_id: input.person_id,
+          dimension: "content",
+          value: { joys: input.joys },
+          evidence_source: "person_stated",
+          confidence: 0.95,
+        });
+      }
+      if ((input.explanation_style && input.explanation_style.length > 0) || (input.avoidances && input.avoidances.length > 0)) {
+        await recordPreference({
+          person_id: input.person_id,
+          dimension: "assistance",
+          value: {
+            explanation_style: input.explanation_style || [],
+            avoidances: input.avoidances || [],
+          },
+          evidence_source: "person_stated",
+          confidence: 0.95,
+        });
+      }
+    } catch (prefErr) {
+      console.warn("Non-fatal: could not sync preferences table during onboarding save:", prefErr);
+    }
+
+    return (rows && rows[0]) || fallbackRecord;
+  } catch (dbErr) {
+    console.warn("Database storage running in resilient mode for onboarding profile:", dbErr);
+    return fallbackRecord;
+  }
+}
+
+export async function getOnboardingProfileRecord(personId: string): Promise<OnboardingProfileRecord | null> {
+  try {
+    const rows = await queryDb<OnboardingProfileRecord>(
+      `SELECT * FROM onboarding_profiles WHERE person_id = $1 LIMIT 1`,
+      [personId]
+    );
+    if (rows && rows[0]) {
+      LOCAL_ONBOARDING_PROFILES.set(personId, rows[0]);
+      return rows[0];
+    }
+  } catch (err) {
+    // Database query unavailable; fall back to resilient local store
+  }
+  return LOCAL_ONBOARDING_PROFILES.get(personId) || null;
+}
+

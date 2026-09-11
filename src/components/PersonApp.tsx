@@ -44,11 +44,12 @@ import { MedicationReminder, MedicationDoseInput } from "../domain/medication";
 import { api } from "../lib/api";
 import { ambientAudio } from "../lib/ambient-audio";
 import { speakWarmly, cancelEmpathicSpeech } from "../lib/empathic-speech";
-import type { PersonSection, VoiceCapability, PersonSession, RoleSurface } from "../types";
+import type { PersonSection, VoiceCapability, PersonSession, RoleSurface, OnboardingProfile } from "../types";
 import { MemoryItem, MediaAsset, FamiliarPlace, FutureEvent, PersonalGameContextPack } from "../domain/cognitive-experience";
 
 interface PersonAppProps {
   onSelectSurface?: (surface: RoleSurface) => void;
+  initialProfile?: OnboardingProfile | null;
 }
 
 const PERSON_ID = "person:purnima";
@@ -69,7 +70,7 @@ const ASSAMESE_MONTHS = [
   "ডিচেম্বৰ",
 ];
 
-export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
+export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface, initialProfile }) => {
   // Navigation tabs: "day" | "life" | "activity" | "people" | "help"
   const [activeSection, setActiveSection] = useState<PersonSection>("day");
   const [language, setLanguage] = useState<"as" | "en">("as");
@@ -161,12 +162,150 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
 
   // Companion chat draft text (voice transcript & real turns live in the shared CompanionContext)
   const [companionInput, setCompanionInput] = useState("");
-  const [session] = useState<PersonSession>({
-    personId: "person:purnima",
-    displayName: "পূৰ্ণিমা দেৱী",
-    preferredLanguage: "Assamese / English",
-    village: "তেজপুৰ, অসম (Tezpur, Assam)",
+  // Dynamic Elder Profile (initialized from props, DB, or cached storage)
+  const [elderProfile, setElderProfile] = useState<{
+    name: string;
+    honorific: string;
+    workBackground: string;
+    preferredLanguage: string;
+    joys: string[];
+    explanationStyle: string[];
+    avoidances: string[];
+  }>(() => {
+    if (initialProfile) {
+      return {
+        name: initialProfile.name || "পূৰ্ণিমা দেৱী",
+        honorific: initialProfile.honorific || "Woman (মহিলা / বাইদেউ / আইতা)",
+        workBackground: initialProfile.workBackground || "Teacher (শিক্ষকতা)",
+        preferredLanguage: initialProfile.preferredLanguage || "Assamese (অসমীয়া)",
+        joys: initialProfile.joys || ["Courtyard & Gardening", "Assam Tea & Snacks", "Borgeet & Folk Music"],
+        explanationStyle: initialProfile.explanationStyle || ["Short and simple"],
+        avoidances: initialProfile.avoidances || [],
+      };
+    }
+    try {
+      const localProfileRaw = localStorage.getItem("mindmitra_onboarding_profile");
+      const localName = localStorage.getItem("mindmitra_elder_name");
+      if (localProfileRaw) {
+        const parsed = JSON.parse(localProfileRaw);
+        return {
+          name: parsed.name || localName || "পূৰ্ণিমা দেৱী",
+          honorific: parsed.honorific || "Woman (মহিলা / বাইদেউ / আইতা)",
+          workBackground: parsed.workBackground || "Teacher (শিক্ষকতা)",
+          preferredLanguage: parsed.preferredLanguage || "Assamese (অসমীয়া)",
+          joys: parsed.joys || ["Courtyard & Gardening", "Assam Tea & Snacks", "Borgeet & Folk Music"],
+          explanationStyle: parsed.explanationStyle || ["Short and simple"],
+          avoidances: parsed.avoidances || [],
+        };
+      }
+      if (localName) {
+        return {
+          name: localName,
+          honorific: "Woman (মহিলা / বাইদেউ / আইতা)",
+          workBackground: "Teacher (শিক্ষকতা)",
+          preferredLanguage: "Assamese (অসমীয়া)",
+          joys: ["Courtyard & Gardening", "Assam Tea & Snacks", "Borgeet & Folk Music"],
+          explanationStyle: ["Short and simple"],
+          avoidances: [],
+        };
+      }
+    } catch {}
+    return {
+      name: "পূৰ্ণিমা দেৱী",
+      honorific: "Woman (মহিলা / বাইদেউ / আইতা)",
+      workBackground: "Teacher (শিক্ষকতা)",
+      preferredLanguage: "Assamese (অসমীয়া)",
+      joys: ["Courtyard & Gardening", "Assam Tea & Snacks", "Borgeet & Folk Music"],
+      explanationStyle: ["Short and simple"],
+      avoidances: [],
+    };
   });
+
+  const [session, setSession] = useState<PersonSession>(() => ({
+    personId: "person:purnima",
+    displayName: elderProfile.name,
+    preferredLanguage: elderProfile.preferredLanguage,
+    village: "তেজপুৰ, অসম (Tezpur, Assam)",
+  }));
+
+  // Fetch live profile from DB on mount & listen to real-time sync events
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncProfileFromDb() {
+      try {
+        const res = await fetch(`/v1/onboarding?person_id=${encodeURIComponent(PERSON_ID)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled && data.found && data.profile) {
+            const p = data.profile;
+            const liveName = (p.name || "").trim() || "পূৰ্ণিমা দেৱী";
+            setElderProfile({
+              name: liveName,
+              honorific: p.honorific || "Woman (মহিলা / বাইদেউ / আইতা)",
+              workBackground: p.work_background || "Teacher (শিক্ষকতা)",
+              preferredLanguage: p.preferred_language || "Assamese (অসমীয়া)",
+              joys: Array.isArray(p.joys) && p.joys.length > 0 ? p.joys : ["Courtyard & Gardening", "Assam Tea & Snacks", "Borgeet & Folk Music"],
+              explanationStyle: Array.isArray(p.explanation_style) ? p.explanation_style : [],
+              avoidances: Array.isArray(p.avoidances) ? p.avoidances : [],
+            });
+            setSession((prev) => ({
+              ...prev,
+              displayName: liveName,
+              preferredLanguage: p.preferred_language || prev.preferredLanguage,
+            }));
+            return;
+          }
+        }
+
+        // Fallback: check /v1/auth/me
+        const authRes = await fetch("/v1/auth/me");
+        if (authRes.ok) {
+          const authData = await authRes.json();
+          if (!cancelled && authData.name) {
+            const liveName = authData.name;
+            setElderProfile((prev) => ({ ...prev, name: liveName }));
+            setSession((prev) => ({ ...prev, displayName: liveName }));
+          }
+        }
+      } catch (err) {
+        console.warn("Could not sync live DB profile, keeping local cache:", err);
+      }
+    }
+
+    // Only fetch if initialProfile wasn't already provided, or as a background validation
+    syncProfileFromDb();
+
+    // Event listener for storage / tab synchronization and custom onboarding event
+    const onStorage = () => syncProfileFromDb();
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("onboarding_profile_updated", onStorage);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("onboarding_profile_updated", onStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (initialProfile) {
+      const liveName = (initialProfile.name || "").trim() || "পূৰ্ণিমা দেৱী";
+      setElderProfile({
+        name: liveName,
+        honorific: initialProfile.honorific || "Woman (মহিলা / বাইদেউ / আইতা)",
+        workBackground: initialProfile.workBackground || "Teacher (শিক্ষকতা)",
+        preferredLanguage: initialProfile.preferredLanguage || "Assamese (অসমীয়া)",
+        joys: initialProfile.joys && initialProfile.joys.length > 0 ? initialProfile.joys : ["Courtyard & Gardening", "Assam Tea & Snacks", "Borgeet & Folk Music"],
+        explanationStyle: initialProfile.explanationStyle || ["Short and simple"],
+        avoidances: initialProfile.avoidances || [],
+      });
+      setSession((prev) => ({
+        ...prev,
+        displayName: liveName,
+        preferredLanguage: initialProfile.preferredLanguage || prev.preferredLanguage,
+      }));
+    }
+  }, [initialProfile]);
 
   const [dateLabel, setDateLabel] = useState("");
   const [assameseDateLabel, setAssameseDateLabel] = useState("");
@@ -288,8 +427,8 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
 
     const guidanceText =
       language === "as"
-        ? `নমস্কাৰ পূৰ্ণিমা বাইদেউ। আজি ${assameseDateLabel || dateLabel}। আপুনি আপোনাৰ তেজপুৰৰ ঘৰত শান্তিৰে আছে। ${eventLineAs}।`
-        : `Namaskar Purnima baideu. Today is ${dateLabel}. You are resting peacefully at your Tezpur home. ${eventLineEn}.`;
+        ? `নমস্কাৰ ${elderProfile.name}। আজি ${assameseDateLabel || dateLabel}। আপুনি আপোনাৰ তেজপুৰৰ ঘৰত শান্তিৰে আছে। ${eventLineAs}।`
+        : `Namaskar ${elderProfile.name}. Today is ${dateLabel}. You are resting peacefully at your Tezpur home. ${eventLineEn}.`;
 
     speakWarmly(guidanceText, {
       rate: 0.88,
@@ -521,16 +660,36 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
             {isSpeakingGuidance ? <VolumeX size={20} /> : <Volume2 size={20} />}
           </button>
 
+          {/* Revisit Onboarding Journey */}
+          {onSelectSurface && (
+            <button
+              type="button"
+              onClick={() => onSelectSurface("onboarding")}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#c2c8c1] bg-[#f8f3ea] hover:bg-[#f2ede4] text-xs font-semibold text-[#1a3826] shadow-2xs transition"
+              title="Edit sanctuary profile or revisit onboarding flight"
+            >
+              <Sparkles size={13} className="text-[#904d00]" />
+              <span className="hidden sm:inline">Revisit Onboarding</span>
+              <span className="sm:hidden">Onboarding</span>
+            </button>
+          )}
+
           {/* Profile Avatar Pill */}
-          <div className="flex items-center gap-2 bg-[#f8f3ea] border border-[#c2c8c1]/60 px-3 py-1.5 rounded-2xl shadow-2xs">
+          <div
+            onClick={() => onSelectSurface?.("onboarding")}
+            className="flex items-center gap-2 bg-[#f8f3ea] hover:bg-[#f2ede4] cursor-pointer border border-[#c2c8c1]/60 px-3 py-1.5 rounded-2xl shadow-2xs transition"
+            title="Profile details · Tap to revisit onboarding"
+          >
             <div className="w-8 h-8 rounded-full bg-[#1a3826] text-white font-serif font-bold text-xs flex items-center justify-center ring-2 ring-[#81a28a]/40">
-              পূ
+              {(elderProfile.name || "পূ").slice(0, 1)}
             </div>
             <div className="text-left hidden sm:block">
               <p className="text-xs font-bold text-[#1d1c16] leading-tight">
-                {session.displayName}
+                {elderProfile.name}
               </p>
-              <p className="text-[10px] text-[#424843]">Tezpur, Assam</p>
+              <p className="text-[10px] text-[#424843]">
+                {elderProfile.workBackground || "Tezpur, Assam"}
+              </p>
             </div>
           </div>
         </div>
@@ -626,10 +785,10 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
                   প্ৰভাতৰ শুভেচ্ছা · Peaceful Morning
                 </p>
                 <h1 className="text-3xl sm:text-5xl md:text-6xl font-serif font-bold text-white tracking-tight leading-tight">
-                  নমস্কাৰ, পূৰ্ণিমা বাইদেউ
+                  নমস্কাৰ, {elderProfile.name}
                 </h1>
                 <p className="text-lg sm:text-xl font-serif text-[#c8ebd1] font-light">
-                  Namaskar, Purnima baideu. You are peacefully home.
+                  Namaskar, {elderProfile.name}. You are peacefully home.
                 </p>
                 <p className="text-xs sm:text-sm text-white/80 max-w-2xl font-sans pt-1 leading-relaxed">
                   {nowTimeLabel} · {dateLabel} ({assameseDateLabel}). The air carries the scent of fresh tea leaves and rain over the river.
@@ -833,8 +992,21 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
                   Something Meaningful to Do
                 </h2>
                 <p className="text-xs sm:text-sm text-[#424843] mt-0.5">
-                  Small, tender activities that feel like home. No rush, no scores.
+                  Small, tender activities personalized for {elderProfile.name}. No rush, no scores.
                 </p>
+                {elderProfile.joys && elderProfile.joys.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2.5">
+                    {elderProfile.joys.map((joy, idx) => (
+                      <span
+                        key={idx}
+                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#eaf0e4] text-[#1a3826] border border-[#81a28a]/40 text-[11px] font-medium"
+                      >
+                        <Sparkles size={11} className="text-[#904d00]" />
+                        <span>{joy}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <button
