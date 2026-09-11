@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { NavBar } from "./components/NavBar";
 import { PersonApp } from "./components/PersonApp";
 import { CaregiverCopilot } from "./components/CaregiverCopilot";
@@ -7,10 +7,20 @@ import { ClinicalBridge } from "./components/ClinicalBridge";
 import { DemosView } from "./components/DemosView";
 import { PrototypesView } from "./components/PrototypesView";
 import { AssetStudioView } from "./components/AssetStudioView";
+import { CompanionProvider, useCompanion } from "./context/CompanionContext";
+import { FloatingVoiceCompanion } from "./components/FloatingVoiceCompanion";
 import type { RoleSurface } from "./types";
 
-export default function App() {
+function AppContent() {
   const [currentSurface, setCurrentSurface] = useState<RoleSurface>("person");
+  const companion = useCompanion();
+
+  useEffect(() => {
+    companion.updateContext({
+      surface: currentSurface,
+      route: `/${currentSurface}`,
+    });
+  }, [currentSurface, companion.updateContext]);
 
   return (
     <div className="min-h-screen bg-[--color-bg] text-[--color-text] flex flex-col font-sans selection:bg-[--color-highlight] selection:text-[--color-text]">
@@ -28,6 +38,18 @@ export default function App() {
           {currentSurface === "assets" && <AssetStudioView />}
         </main>
       )}
+
+      {/* Floating Conversational Voice-to-Voice Companion across the whole page */}
+      <FloatingVoiceCompanion />
     </div>
   );
 }
+
+export default function App() {
+  return (
+    <CompanionProvider>
+      <AppContent />
+    </CompanionProvider>
+  );
+}
+

@@ -24,15 +24,73 @@ export interface PersonSession {
   village: string;
 }
 
-export interface CompanionTurn {
-  answer: string;
-  sources?: Array<{
-    id: string;
+export interface CompanionAction {
+  type: "navigate" | "call_contact" | "start_activity" | "play_music" | "show_media" | "provide_scaffold" | "set_reminder";
+  label: string;
+  target?: string;
+  phone?: string;
+  payload?: Record<string, any>;
+}
+
+export interface CompanionVoiceMeta {
+  persona: string;
+  recommended_pitch: number;
+  recommended_rate: number;
+  emotion?: string;
+  audio_base64?: string;
+}
+
+export interface UIContextContract {
+  surface: RoleSurface;
+  route?: string;
+  page?: string; // "day" | "life" | "activity" | "people" | "help" | etc.
+  visible_entity?: {
+    type: "person" | "photo" | "event" | "routine" | "medication";
+    id?: string;
+    name?: string;
+    title?: string;
+    description?: string;
+    metadata?: Record<string, any>;
+  } | null;
+  active_game?: {
+    game_id: string;
     title: string;
-    type?: string;
+    task_type?: string;
+    round_id?: string | number;
+    current_question?: string;
+    current_task_index?: number;
+    total_tasks?: number;
+    scaffold_level?: string;
+    allowed_actions?: string[];
+  } | null;
+  current_task?: string;
+  audio_playing?: boolean;
+}
+
+export interface CompanionTurn {
+  request_id?: string;
+  answer: string;
+  asText?: string; // Assamese translation
+  intent?: string;
+  path?: "deterministic" | "generated";
+  provider?: "google_gemini" | "sarvam_ai" | "deterministic";
+  model?: string;
+  latency_ms?: number;
+  sources?: Array<{
+    id?: string;
+    fact_id?: string;
+    title?: string;
+    text?: string;
+    source_type?: string;
+    verified?: boolean;
     confidence?: number;
   }>;
   suggestedAction?: string;
+  action?: CompanionAction | null;
+  voice_meta?: CompanionVoiceMeta;
+  context_snapshot?: UIContextContract;
+  safety_passed?: boolean;
+  speakable?: boolean;
 }
 
 export interface InjectDeclineResponse {

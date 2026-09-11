@@ -42,6 +42,12 @@ import {
   deleteDbMedication,
   seedInitialMedicationsIfEmpty,
 } from "./src/db/medications-db";
+import {
+  callSarvamChat,
+  callSarvamTTS,
+  callSarvamSTT,
+  getSarvamApiKey,
+} from "./src/intelligence/sarvam-service";
 
 // ── Google GenAI Client (Lazy Init with User-Agent header) ───────────────────
 let aiClient: GoogleGenAI | null = null;
@@ -309,27 +315,44 @@ async function startServer() {
     });
   });
 
-  // 5. Companion Turn (Deep Intelligence with Gemini Flash + Deterministic Grounding)
+  // 5. Companion Turn (Deep Intelligence with Gemini Flash + Sarvam AI Fallback + Deep Context Awareness)
   app.post("/v1/persons/:personId/companion/turn", async (req: Request, res: Response) => {
+    const startTurnTime = Date.now();
     const {
       message = "",
-      surface = "day",
-      current_entity = "",
+      surface = "person",
+      page = "day",
+      route = "",
+      visible_entity = null,
+      active_game = null,
       current_task = "",
       history = [],
+      language = "as",
     } = req.body || {};
+
     const text = String(message || "").trim();
     const lower = text.toLowerCase();
 
-    // 1. Distress / Crisis detection
+    // 1. Distress / Crisis detection (Always fail-safe)
     const isCrisis = CRISIS_PATTERNS.some((p) => p.test(lower));
     if (isCrisis) {
       return res.json({
         request_id: `req_${Date.now()}`,
         answer: "Purnima baideu, you are safe right now in your home in Tezpur. Anu is right nearby in the house, and I am here with you. Take a slow, gentle breath. If you need someone, the Tele-MANAS helpline is always open at 14416.",
+        asText: "পূৰ্ণিমা বাইদেউ, আপুনি তেজপুৰৰ নিজৰ ঘৰতে সম্পূৰ্ণ সুৰক্ষিত আছে। অনু কাষৰ কোঠাতে আছে আৰু মই আপোনাৰ লগত আছোঁ। এটি শান্ত দীঘল উশাহ লওক। সহায়ৰ বাবে টেলি-মানস ১৪৪১৬ নম্বৰত সদায় উপলব্ধ।",
         intent: "crisis_support",
         path: "safety_override",
-        sources: [{ fact_id: "tele_manas_14416", source_type: "national_mental_health_helpline", verified: true, text: "Tele-MANAS 24x7 toll-free helpline 14416" }],
+        provider: "deterministic",
+        model: "safety_firewall",
+        latency_ms: Date.now() - startTurnTime,
+        sources: [
+          {
+            fact_id: "tele_manas_14416",
+            source_type: "national_mental_health_helpline",
+            verified: true,
+            text: "Tele-MANAS 24x7 toll-free mental health helpline 14416",
+          },
+        ],
         gaps: [],
         conflicting: false,
         hedged: true,
@@ -349,21 +372,22 @@ async function startServer() {
           recommended_rate: 0.88,
           emotion: "deep_reassurance",
         },
+        context_snapshot: {
+          surface,
+          page,
+          visible_entity,
+          active_game,
+        },
       });
     }
 
-    // 2. Default Personal World Model Grounding Sources
-    let answer = "Namaskar Purnima baideu. It is a peaceful morning here in Tezpur. The courtyard is sunny and quiet.";
-    let intent = "general_companion";
-    let pathType: "deterministic" | "generated" = "deterministic";
-    let detectedAction: any = null;
-
-    const sources = [
+    // 2. Resolve Context & Provenance Sources
+    const sources: Array<{ fact_id?: string; source_type?: string; verified?: boolean; text?: string }> = [
       {
         fact_id: "fact:family_assam",
-        source_type: "verified_family_photo",
+        source_type: "verified_family_record",
         verified: true,
-        text: "Purnima's family home in Tezpur, Assam with daughter Anu.",
+        text: "Purnima's ancestral home in Tezpur, Assam near Brahmaputra with daughter Anu.",
       },
       {
         fact_id: "fact:granddaughter_rina",
@@ -379,14 +403,55 @@ async function startServer() {
       },
     ];
 
-    // Build context description for Gemini Context Bridge
-    let surfaceDescription = "Viewing Day Overview.";
-    if (surface === "life") surfaceDescription = "Viewing My Life album (Rongali Bihu photos, Brahmaputra walk, bamboo flute melodies).";
-    else if (surface === "activity") surfaceDescription = `Viewing Activities (${current_entity || "Flower garland or tea making"}).`;
-    else if (surface === "people") surfaceDescription = "Viewing Loved People (Daughter Anu, Granddaughter Rina, Son Bikash, ASHA worker Meena).";
-    else if (surface === "help") surfaceDescription = "Viewing Help & Immediate Reassurance screen.";
+    // Build rich context summary based on current page and visible entities
+    let pageContextSummary = `Surface: ${surface}, Page: ${page}`;
+    if (page === "day") {
+      pageContextSummary += " (Viewing Day Overview: Morning Puja, Veranda card, upcoming 4 PM Cardamom Tea, 5 PM call with Rina).";
+    } else if (page === "life") {
+      pageContextSummary += " (Viewing My Life Album: Rongali Bihu festival, Brahmaputra riverbank walks, Tezpur memories, Bamboo flute melodies).";
+    } else if (page === "activity") {
+      pageContextSummary += " (Viewing Cognitive Activities & Sensory Calming space).";
+    } else if (page === "people") {
+      pageContextSummary += " (Viewing Loved People: Daughter Anu, Granddaughter Rina, Son Bikash, ASHA worker Meena).";
+    } else if (page === "help") {
+      pageContextSummary += " (Viewing Help & Reassurance: Home location, Emergency contacts, Tele-MANAS 14416).";
+    }
 
-    // Assemble multi-turn history snippet if provided
+    // Pronoun & Entity Resolution
+    let entityFocusText = "";
+    if (visible_entity) {
+      if (visible_entity.type === "person" && visible_entity.name) {
+        entityFocusText = `User is currently looking at person profile: ${visible_entity.name} (${visible_entity.description || "family member"}). Any pronouns like 'she', 'her', 'who is this' refer directly to ${visible_entity.name}.`;
+        sources.push({
+          fact_id: `entity:${visible_entity.name}`,
+          source_type: "visible_person_profile",
+          verified: true,
+          text: `${visible_entity.name}: ${visible_entity.description || "Close family member"}`,
+        });
+      } else if (visible_entity.type === "photo" && (visible_entity.title || visible_entity.description)) {
+        entityFocusText = `User is currently viewing photo: "${visible_entity.title || "Family Memory"}" - ${visible_entity.description || ""}. Any questions like 'where was this taken' refer to this photograph.`;
+        sources.push({
+          fact_id: "entity:visible_photo",
+          source_type: "visible_photo_memory",
+          verified: true,
+          text: `Photo: ${visible_entity.title} - ${visible_entity.description}`,
+        });
+      }
+    }
+
+    // Active Game & Scaffolding Context
+    let gameContextText = "";
+    if (active_game) {
+      gameContextText = `Active Game: "${active_game.title}" (ID: ${active_game.game_id}). Round/Task: ${active_game.current_question || active_game.current_task_index || 1}. Current scaffold level: ${active_game.scaffold_level || "S0 (Independent)"}. If user asks for 'help', 'hint', 'what to do', or 'which one', provide gentle encouragement and the next gentle hint without blurting out the answer!`;
+      sources.push({
+        fact_id: `game:${active_game.game_id}`,
+        source_type: "active_cognitive_game",
+        verified: true,
+        text: `Playing ${active_game.title}: ${active_game.current_question || "Task in progress"}`,
+      });
+    }
+
+    // Format recent conversational turns
     let recentTurns = "";
     if (Array.isArray(history) && history.length > 0) {
       recentTurns = history
@@ -395,23 +460,33 @@ async function startServer() {
         .join("\n");
     }
 
-    // 3. Generate grounded response with resilient Gemini Flash model fallback cascade
-    const genAI = getGenAI();
-    if (genAI && text) {
-      // Prioritize fast, high-availability flash models with graceful fallback on 503 spikes
-      const candidateModels = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"];
-      for (const modelName of candidateModels) {
-        try {
-          const promptContent = `Purnima says: "${text}".
+    // 3. Multi-Model AI Cascade (Google Gemini -> Sarvam AI -> Deterministic)
+    let answer = "";
+    let asText = "";
+    let intent = "general_companion";
+    let pathType: "deterministic" | "generated" = "deterministic";
+    let detectedAction: any = null;
+    let provider: "google_gemini" | "sarvam_ai" | "deterministic" = "deterministic";
+    let usedModel = "fallback_engine";
+
+    const promptContent = `Purnima says: "${text}".
 Context:
-- Current Time: Tuesday, 10:30 AM (Sunny, 24°C in Tezpur, Assam)
-- Current Screen Context: ${surfaceDescription}
+- Current Time: Tuesday, 10:30 AM (Pleasant 24°C in Tezpur, Assam)
+- Page Context: ${pageContextSummary}
+${entityFocusText ? `- Entity in focus: ${entityFocusText}` : ""}
+${gameContextText ? `- Game in progress: ${gameContextText}` : ""}
 ${current_task ? `- Current Activity Focus: ${current_task}` : ""}
 ${recentTurns ? `Recent conversation:\n${recentTurns}` : ""}
-- Key People: Daughter Anu (in the house), Granddaughter Rina (calls at 5:00 PM from Guwahati).
-- Routine: Tea at 4:00 PM.
-Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daughterly affection and empathy. Always address her tenderly as "Purnima baideu" or "Aitâ". If relevant, append an action tag at the end (e.g. [ACTION:call_anu], [ACTION:call_rina], [ACTION:navigate_life], [ACTION:navigate_activity], [ACTION:navigate_people], [ACTION:play_flute]).`;
+- Key People: Daughter Anu (in the house), Granddaughter Rina (calls at 5:00 PM from Guwahati, studying literature), Son Bikash (Bengaluru), ASHA Meena (visits for health check).
+- Routines: Morning Puja & marigolds completed. Afternoon tea at 4:00 PM.
+Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daughterly affection and empathy. Always address her tenderly as "Purnima baideu" or "Aitâ". If she asks for help during a game, provide a gentle hint. If relevant, append an action tag at the end (e.g. [ACTION:call_anu], [ACTION:call_rina], [ACTION:navigate_life], [ACTION:navigate_activity], [ACTION:navigate_people], [ACTION:provide_scaffold], [ACTION:play_flute]).`;
 
+    // Attempt 1: Google Gemini Flash
+    const genAI = getGenAI();
+    if (genAI && text) {
+      const candidateModels = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite"];
+      for (const modelName of candidateModels) {
+        try {
           const response = await genAI.models.generateContent({
             model: modelName,
             contents: promptContent,
@@ -423,90 +498,183 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
 
           let rawGenerated = response.text?.trim();
           if (rawGenerated) {
-            // Verify with Safety Filter (ensure no diagnosis, medication, or forbidden claims)
             const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(rawGenerated));
             if (!forbiddenMatch) {
-              // Extract action tag if present
               const actionMatch = rawGenerated.match(/\[ACTION:([a-z0-9_:]+)\]/i);
               if (actionMatch) {
                 const actionCode = actionMatch[1].toLowerCase();
                 rawGenerated = rawGenerated.replace(/\[ACTION:[^\]]+\]/g, "").trim();
-
-                if (actionCode.includes("call_anu")) {
-                  detectedAction = { type: "call_contact", label: "Call Daughter Anu", target: "Anu", phone: "+91 98640 12345" };
-                } else if (actionCode.includes("call_rina")) {
-                  detectedAction = { type: "call_contact", label: "Call Granddaughter Rina", target: "Rina", phone: "+91 94350 98765" };
-                } else if (actionCode.includes("navigate_life") || actionCode.includes("photos")) {
-                  detectedAction = { type: "navigate", label: "View Family Photos & Music", target: "life" };
-                } else if (actionCode.includes("navigate_activity") || actionCode.includes("garland") || actionCode.includes("tea")) {
-                  detectedAction = { type: "start_activity", label: "Start Gentle Activity", target: "activity" };
-                } else if (actionCode.includes("navigate_people")) {
-                  detectedAction = { type: "navigate", label: "See Loved People", target: "people" };
-                } else if (actionCode.includes("navigate_help")) {
-                  detectedAction = { type: "navigate", label: "Open Help & Support", target: "help" };
-                } else if (actionCode.includes("play_flute")) {
-                  detectedAction = { type: "play_music", label: "Play Bamboo Flute Raga", target: "life", payload: { track: "flute" } };
-                }
+                detectedAction = parseActionCode(actionCode, active_game);
               }
 
               answer = rawGenerated;
-              intent = "gemini_grounded_conversation";
+              intent = active_game ? "game_assistance" : "gemini_grounded_conversation";
               pathType = "generated";
-              break; // Successfully generated and passed safety checks
+              provider = "google_gemini";
+              usedModel = modelName;
+              break;
             }
           }
         } catch (geminiErr: any) {
-          const isDemandSpike =
-            geminiErr?.status === 503 ||
-            geminiErr?.code === 503 ||
-            String(geminiErr?.message || "").includes("503") ||
-            String(geminiErr?.message || "").includes("high demand");
-
-          if (!isDemandSpike) {
-            console.info(`Model ${modelName} unavailable, falling back.`);
-          }
+          console.warn(`[Companion] Gemini model ${modelName} encountered an issue, checking fallback.`);
         }
       }
     }
 
-    // 4. Deterministic fallback if Gemini was not used or failed
-    if (pathType === "deterministic") {
-      if (lower.includes("today") || lower.includes("happening") || lower.includes("time") || lower.includes("day")) {
-        answer = "Today is Tuesday, Aitâ. In the afternoon, your granddaughter Rina is calling from Guwahati at 5:00 PM, and your warm cardamom tea is at 4:00 PM.";
+    // Attempt 2: Sarvam AI Fallback (if Gemini was unavailable, failed, or blocked)
+    if (!answer && text) {
+      try {
+        const sarvamKey = getSarvamApiKey();
+        if (sarvamKey) {
+          console.info("[Companion] Invoking Sarvam AI fallback (sarvam-105b-conversations)...");
+          const sarvamRes = await callSarvamChat(promptContent, {
+            systemInstruction: COMPANION_SYSTEM_INSTRUCTION,
+            temperature: 0.6,
+            maxTokens: 250,
+          });
+
+          let rawSarvam = sarvamRes.text?.trim();
+          if (rawSarvam) {
+            const forbiddenMatch = FORBIDDEN_PATTERNS.find((p) => p.regex.test(rawSarvam));
+            if (!forbiddenMatch) {
+              const actionMatch = rawSarvam.match(/\[ACTION:([a-z0-9_:]+)\]/i);
+              if (actionMatch) {
+                const actionCode = actionMatch[1].toLowerCase();
+                rawSarvam = rawSarvam.replace(/\[ACTION:[^\]]+\]/g, "").trim();
+                detectedAction = parseActionCode(actionCode, active_game);
+              }
+
+              answer = rawSarvam;
+              intent = active_game ? "game_assistance" : "sarvam_grounded_conversation";
+              pathType = "generated";
+              provider = "sarvam_ai";
+              usedModel = sarvamRes.model;
+            }
+          }
+        }
+      } catch (sarvamErr) {
+        console.warn("[Companion] Sarvam AI fallback attempt failed:", sarvamErr);
+      }
+    }
+
+    // Attempt 3: High-Reliability Grounded Deterministic Engine
+    if (!answer) {
+      pathType = "deterministic";
+      provider = "deterministic";
+      usedModel = "mindmitra_deterministic_v1";
+
+      // 3a. Game scaffolding query
+      if (active_game && (lower.includes("help") || lower.includes("hint") || lower.includes("what") || lower.includes("which") || lower.includes("confused"))) {
+        answer = `You are doing wonderfully, Aitâ. Take your time. Look closely at the warm colors on the screen, and think about your morning routine with Anu.`;
+        asText = `আপুনি বৰ সুন্দৰকৈ কৰিছে, আইতা। লাহে-ধীৰে চাওক। পৰ্দাত থকা উজ্জ্বল ৰংবোৰ চাওক আৰু পুৱাৰ অনুৰ লগত কৰা কামবোৰ মনত পেলাওক।`;
+        intent = "game_assistance";
+        detectedAction = {
+          type: "provide_scaffold",
+          label: "Show Gentle Visual Cue",
+          target: active_game.game_id,
+        };
+      }
+      // 3b. Visible Person pronoun query ("tell me about her", "who is she", "call her")
+      else if (visible_entity?.type === "person" && (lower.includes("her") || lower.includes("she") || lower.includes("who") || lower.includes("call"))) {
+        const pName = visible_entity.name || "your loved one";
+        if (pName.toLowerCase().includes("rina")) {
+          answer = "This is your granddaughter Rina, Aitâ. She is studying in Guwahati and calls you every Tuesday at 5:00 PM. She always brings you sweet til pitha.";
+          asText = "এয়া আপোনাৰ মৰমৰ নাতিনী ৰীনা, আইতা। গুৱাহাটীত পঢ়ি আছে আৰু প্ৰতি মঙলবাৰে বিয়লি ৫ বজাত আপোনাক ফোন কৰে।";
+          detectedAction = { type: "call_contact", label: "Call Rina (+91 94350 98765)", target: "Rina", phone: "+91 94350 98765" };
+        } else if (pName.toLowerCase().includes("anu")) {
+          answer = "This is your daughter Anu, Purnima baideu. She lives right here in the house with you, making sure your home is peaceful and filled with love.";
+          asText = "এয়া আপোনাৰ জীয়ৰী অনু, পূৰ্ণিমা বাইদেউ। তেওঁ আপোনাৰ লগতে ঘৰতে আছে আৰু আপোনাৰ সকলো যত্ন লৈছে।";
+          detectedAction = { type: "call_contact", label: "Call Anu (+91 98640 12345)", target: "Anu", phone: "+91 98640 12345" };
+        } else {
+          answer = `This is ${pName}, who loves and cherishes you very dearly, Aitâ.`;
+          asText = `এয়া আপোনাৰ মৰমৰ ${pName}, যিয়ে আপোনাক বৰ মৰম আৰু শ্ৰদ্ধা কৰে।`;
+        }
+        intent = "person_clarification";
+      }
+      // 3c. Photo query ("where was this taken", "who is in this picture")
+      else if (visible_entity?.type === "photo" || lower.includes("photo") || lower.includes("picture") || lower.includes("album") || lower.includes("bihu")) {
+        answer = "This is your family gathering during the Rongali Bihu festival in Tezpur. You are standing under the mango tree with daughter Anu and granddaughter Rina.";
+        asText = "এয়া তেজপুৰত ৰঙালী বিহুৰ সময়ত আপোনাৰ পৰিয়ালৰ ফটো। আমগছৰ তলত জীয়ৰী অনু আৰু নাতিনী ৰীনাৰ লগত আপুনি হাঁহি আছে।";
+        intent = "life_memory";
+        detectedAction = { type: "show_media", label: "Open Family Photo Album", target: "life" };
+      }
+      // 3d. Routine & Time questions
+      else if (lower.includes("today") || lower.includes("time") || lower.includes("happening") || lower.includes("plan") || lower.includes("routine")) {
+        answer = "Today is Tuesday in Tezpur, Aitâ. In the afternoon at 4:00 PM, warm cardamom tea with ginger is waiting for you, and granddaughter Rina will call at 5:00 PM.";
+        asText = "আজি মঙলবাৰ, আইতা। বিয়লি ৪ বজাত আপোনাৰ বাবে গৰম ইলাচী চাহ আৰু ৫ বজাত গুৱাহাটীৰ পৰা নাতিনী ৰীনাৰ ফোন আহিব।";
         intent = "day_orientation";
         detectedAction = { type: "navigate", label: "See Today's Plan", target: "day" };
-      } else if (lower.includes("rina") || lower.includes("granddaughter")) {
-        answer = "Rina is calling you from Guwahati at 5:00 PM, Aitâ. She loves talking to you about her college and your delicious til pitha.";
+      }
+      // 3e. Specific family members
+      else if (lower.includes("rina") || lower.includes("granddaughter")) {
+        answer = "Rina is calling you from Guwahati at 5:00 PM today, Aitâ. She loves hearing your stories about Tezpur.";
+        asText = "ৰীনাই আজি বিয়লি ৫ বজাত গুৱাহাটীৰ পৰা আপোনাক ফোন কৰিব, আইতা। আপোনাৰ সাধু কথাবোৰ তাই বৰ ভাল পায়।";
         intent = "family_connection";
         detectedAction = { type: "call_contact", label: "Call Rina (+91 94350 98765)", target: "Rina", phone: "+91 94350 98765" };
       } else if (lower.includes("anu") || lower.includes("daughter")) {
-        answer = "Anu is right here in the house with you, Purnima baideu. She is taking wonderful care of our home.";
+        answer = "Anu is right here in the house with you, Purnima baideu. She is taking wonderful care of you.";
+        asText = "অনু আপোনাৰ লগতে ঘৰতে আছে, পূৰ্ণিমা বাইদেউ। তেওঁ আপোনাৰ সুন্দৰ যত্ন লৈ আছে।";
         intent = "family_connection";
         detectedAction = { type: "call_contact", label: "Call Anu (+91 98640 12345)", target: "Anu", phone: "+91 98640 12345" };
-      } else if (lower.includes("family") || lower.includes("bikash") || lower.includes("photo") || lower.includes("album")) {
-        answer = "Here is a cherished photograph from the Bihu festival in Tezpur. Rina and Bikash are smiling beside you under the mango tree, and Anu is close by.";
-        intent = "life_memory";
-        detectedAction = { type: "show_media", label: "Open Family Photo Album", target: "life" };
-      } else if (lower.includes("activity") || lower.includes("together") || lower.includes("music") || lower.includes("song") || lower.includes("do") || lower.includes("bored")) {
-        answer = "Let's weave sweet marigold flowers together, or listen to a gentle morning bamboo flute raga.";
+      }
+      // 3f. Activity & Music requests
+      else if (lower.includes("activity") || lower.includes("game") || lower.includes("garland") || lower.includes("flower") || lower.includes("play")) {
+        answer = "Let's weave marigold flowers together, Aitâ, or match pleasant family moments.";
+        asText = "আহক আমি একেলগে গেন্দুপুলৰ মালা গাঁথোঁ বা পুৰণি সুখৰ ক্ষণবোৰ মনত পেলাওঁ।";
         intent = "gentle_activity";
         detectedAction = { type: "start_activity", label: "Start Gentle Flower Garland", target: "activity" };
-      } else if (lower.includes("help") || lower.includes("scared") || lower.includes("lost") || lower.includes("where")) {
-        answer = "You are safe in your home in Tezpur, Purnima baideu. Anu is in the next room, and I am right here with you. Take a slow, gentle breath.";
-        intent = "reassurance_support";
-        detectedAction = { type: "navigate", label: "Go to Help & Safety", target: "help" };
-      } else if (lower.includes("tea") || lower.includes("chai")) {
-        answer = "Anu is preparing your warm cardamom tea with fresh ginger for 4:00 PM. A pleasant afternoon is ahead.";
+      } else if (lower.includes("music") || lower.includes("song") || lower.includes("flute")) {
+        answer = "Here is the peaceful bamboo flute raga from Tezpur to relax your mind and bring calm to your heart.";
+        asText = "আপোনাৰ মন শান্ত কৰিবলৈ তেজপুৰৰ এই সুমধুৰ বাঁহীৰ সুৰটি বজাওঁ।";
+        intent = "music_reassurance";
+        detectedAction = { type: "play_music", label: "Play Bamboo Flute Raga", target: "life", payload: { track: "flute" } };
+      }
+      // 3g. Tea & Refreshment
+      else if (lower.includes("tea") || lower.includes("chai")) {
+        answer = "Anu is preparing your fragrant cardamom and fresh ginger tea for 4:00 PM on the veranda.";
+        asText = "বিয়লি ৪ বজাত বাৰান্দাত আপোনাৰ বাবে ইলাচী আৰু আদা দিয়া গৰম চাহ ৰখা হ'ব।";
         intent = "routine_reassurance";
         detectedAction = { type: "start_activity", label: "Prepare Afternoon Tea", target: "activity" };
       }
+      // 3h. General reassurance
+      else {
+        answer = "Namaskar Purnima baideu. You are safe in your peaceful home in Tezpur. Anu is close by, and I am right here beside you.";
+        asText = "নমস্কাৰ পূৰ্ণিমা বাইদেউ। আপুনি তেজপুৰৰ শান্ত নিজা ঘৰতে আছে। অনু কাষতে আছে আৰু মই আপোনাৰ লগতে আছোঁ।";
+        intent = "general_companion";
+      }
+    }
+
+    // Helper for action parsing
+    function parseActionCode(actionCode: string, activeGame: any) {
+      if (actionCode.includes("call_anu")) {
+        return { type: "call_contact", label: "Call Daughter Anu", target: "Anu", phone: "+91 98640 12345" };
+      } else if (actionCode.includes("call_rina")) {
+        return { type: "call_contact", label: "Call Granddaughter Rina", target: "Rina", phone: "+91 94350 98765" };
+      } else if (actionCode.includes("navigate_life") || actionCode.includes("photos")) {
+        return { type: "navigate", label: "View Family Photos & Music", target: "life" };
+      } else if (actionCode.includes("navigate_activity") || actionCode.includes("garland") || actionCode.includes("tea")) {
+        return { type: "start_activity", label: "Start Gentle Activity", target: "activity" };
+      } else if (actionCode.includes("navigate_people")) {
+        return { type: "navigate", label: "See Loved People", target: "people" };
+      } else if (actionCode.includes("navigate_help")) {
+        return { type: "navigate", label: "Open Help & Support", target: "help" };
+      } else if (actionCode.includes("provide_scaffold") || actionCode.includes("hint")) {
+        return { type: "provide_scaffold", label: "Show Visual Cue", target: activeGame?.game_id || "yesterday_today_tomorrow" };
+      } else if (actionCode.includes("play_flute")) {
+        return { type: "play_music", label: "Play Bamboo Flute Raga", target: "life", payload: { track: "flute" } };
+      }
+      return null;
     }
 
     res.json({
       request_id: `req_${Date.now()}`,
       answer,
+      asText: asText || answer,
       intent,
       path: pathType,
+      provider,
+      model: usedModel,
+      latency_ms: Date.now() - startTurnTime,
       sources,
       gaps: [],
       conflicting: false,
@@ -520,6 +688,68 @@ Respond in 1-2 gentle, comforting, spoken-friendly sentences with genuine daught
         recommended_rate: 0.88,
         emotion: "warm_comfort",
       },
+      context_snapshot: {
+        surface,
+        page,
+        visible_entity,
+        active_game,
+        current_task,
+      },
+    });
+  });
+
+  // 5.1 Sarvam Text-to-Speech API Endpoint (/api/tts/sarvam)
+  app.post("/api/tts/sarvam", async (req: Request, res: Response) => {
+    try {
+      const { text = "", language_code = "en-IN", speaker = "priya" } = req.body || {};
+      const cleanText = String(text).trim();
+      if (!cleanText) {
+        return res.status(400).json({ error: "Text is required" });
+      }
+
+      const ttsResult = await callSarvamTTS(cleanText, {
+        targetLanguageCode: language_code,
+        speaker: speaker as any,
+      });
+
+      res.json(ttsResult);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[TTS Endpoint] Error synthesizing with Sarvam:", msg);
+      res.status(502).json({ error: msg, fallback: "browser_speech_synthesis" });
+    }
+  });
+
+  // 5.2 Sarvam Speech-to-Text API Endpoint (/api/stt/sarvam)
+  app.post("/api/stt/sarvam", express.raw({ type: "*/*", limit: "10mb" }), async (req: Request, res: Response) => {
+    try {
+      const audioBuffer = req.body;
+      const mimeType = (req.headers["content-type"] as string) || "audio/wav";
+      const languageCode = (req.query.lang as string) || "as-IN";
+
+      if (!audioBuffer || audioBuffer.length === 0) {
+        return res.status(400).json({ error: "Audio buffer is empty" });
+      }
+
+      const sttResult = await callSarvamSTT(audioBuffer, mimeType, languageCode);
+      res.json(sttResult);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[STT Endpoint] Error transcribing with Sarvam:", msg);
+      res.status(502).json({ error: msg });
+    }
+  });
+
+  // 5.3 Companion Status & Model Diagnostics (/api/companion/status)
+  app.get("/api/companion/status", (req: Request, res: Response) => {
+    const sarvamKey = getSarvamApiKey();
+    res.json({
+      gemini_available: Boolean(process.env.GEMINI_API_KEY),
+      sarvam_available: Boolean(sarvamKey),
+      primary_provider: process.env.GEMINI_API_KEY ? "google_gemini" : "sarvam_ai",
+      fallback_provider: sarvamKey ? "sarvam_ai" : "deterministic",
+      supported_languages: ["as-IN", "en-IN", "hi-IN", "bn-IN"],
+      active_voice: "priya (Bulbul v3)",
     });
   });
 

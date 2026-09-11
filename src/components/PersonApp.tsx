@@ -38,6 +38,7 @@ import { InfrastructureStatusModal } from "./InfrastructureStatusModal";
 import { MedicationRemindersPanel } from "./medications/MedicationRemindersPanel";
 import { MedicationAudioNotificationModal } from "./medications/MedicationAudioNotificationModal";
 import { CaregiverDosageModal } from "./medications/CaregiverDosageModal";
+import { useCompanion } from "../context/CompanionContext";
 import { medicationStore } from "../intelligence/medication-store";
 import { MedicationReminder, MedicationDoseInput } from "../domain/medication";
 import { api } from "../lib/api";
@@ -59,6 +60,16 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
   const [showRinaModal, setShowRinaModal] = useState(false);
   const [showInfraModal, setShowInfraModal] = useState(false);
   const [savedMemories, setSavedMemories] = useState<MemoryItem[]>([]);
+  const companion = useCompanion();
+
+  // Sync section with floating companion context
+  useEffect(() => {
+    companion.updateContext({
+      surface: "person",
+      page: activeSection,
+      current_task: activeSection === "activity" ? "Cognitive Experience & Sensory Calm" : undefined,
+    });
+  }, [activeSection, companion.updateContext]);
 
   // Audio / Sound states
   const [courtyardAudioPlaying, setCourtyardAudioPlaying] = useState(false);
@@ -208,6 +219,28 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
     }
   };
 
+  // Handle actions dispatched by floating companion
+  useEffect(() => {
+    return companion.registerActionHandler((action) => {
+      if (action.type === "navigate" && action.target) {
+        if (["day", "life", "activity", "people", "help"].includes(action.target)) {
+          setActiveSection(action.target as any);
+        }
+      } else if (action.type === "call_contact" && action.target) {
+        if (action.target.toLowerCase().includes("rina")) {
+          setShowRinaModal(true);
+        }
+      } else if (action.type === "start_activity") {
+        setActiveSection("activity");
+      } else if (action.type === "play_music") {
+        setActiveSection("life");
+        if (!fluteAudioPlaying) {
+          toggleFluteSound();
+        }
+      }
+    });
+  }, [companion, fluteAudioPlaying]);
+
   // Handle Companion turn
   const handleSendTurn = (customPrompt?: string) => {
     const textToSend = customPrompt || companionInput;
@@ -274,6 +307,7 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
   };
 
   const scrollToCompanion = () => {
+    companion.setIsOpen(true);
     if (activeSection !== "day") {
       setActiveSection("day");
     }
@@ -1380,23 +1414,6 @@ export const PersonApp: React.FC<PersonAppProps> = ({ onSelectSurface }) => {
           </div>
         </div>
       )}
-
-      {/* ── FLOATING BUTTON: TALK WITH MINDMITRA (BOTTOM RIGHT) ── */}
-      <div className="fixed bottom-6 right-6 z-40">
-        <button
-          type="button"
-          onClick={scrollToCompanion}
-          className="bg-[#1a3826] hover:bg-[#2d5a3f] text-white px-5 py-3.5 rounded-full flex items-center gap-2.5 shadow-xl border border-white/20 transition transform hover:scale-105"
-          aria-label="Talk with MindMitra"
-        >
-          <span className="relative flex h-3 w-3">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500" />
-          </span>
-          <Mic size={18} />
-          <span className="text-xs sm:text-sm font-semibold">Talk with MindMitra</span>
-        </button>
-      </div>
 
       {/* ── FOOTER: SANCTUARY, STATUS & ECO-SYSTEM BINDING ── */}
       <footer className="mt-16 bg-[#f2ede4] border-t border-[#c2c8c1]/60 px-4 sm:px-8 py-8 space-y-6 text-[#424843]">

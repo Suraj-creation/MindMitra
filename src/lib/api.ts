@@ -28,15 +28,39 @@ export const api = {
   async sendCompanionTurn(
     _token: string,
     personId: string,
-    message: string
+    message: string,
+    context?: any,
+    history?: Array<{ role: "user" | "assistant"; text: string }>,
+    language?: "as" | "en"
   ): Promise<CompanionTurn> {
     const res = await fetch(`/v1/persons/${encodeURIComponent(personId)}/companion/turn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({
+        message,
+        surface: context?.surface || "person",
+        page: context?.page || "day",
+        route: context?.route,
+        visible_entity: context?.visible_entity,
+        active_game: context?.active_game,
+        current_task: context?.current_task,
+        history,
+        language: language || "as",
+      }),
     });
     if (!res.ok) throw new Error("Failed to send companion turn");
     return await res.json();
+  },
+
+  async synthesizeSpeech(text: string, language: string = "en-IN", speaker: string = "priya"): Promise<string> {
+    const res = await fetch("/api/tts/sarvam", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language_code: language, speaker }),
+    });
+    if (!res.ok) throw new Error("TTS synthesis failed");
+    const data = await res.json();
+    return data.audioBase64;
   },
 
   async injectDecline(days: number): Promise<InjectDeclineResponse> {

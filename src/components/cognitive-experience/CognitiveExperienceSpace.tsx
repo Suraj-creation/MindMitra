@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { useCompanion } from "../../context/CompanionContext";
 import { MyLifeTimelineEngine } from "./MyLifeTimelineEngine";
 import { PrepareForEngine } from "./PrepareForEngine";
 import { ExperienceBraidEngine } from "./ExperienceBraidEngine";
@@ -35,6 +36,31 @@ export const CognitiveExperienceSpace: React.FC<Props> = ({ onBackToDay }) => {
   // Garland state (preserved gentle sensory activity)
   const [garlandFlowers, setGarlandFlowers] = useState<string[]>([]);
   const [flutePlaying, setFlutePlaying] = useState<boolean>(false);
+  const companion = useCompanion();
+
+  useEffect(() => {
+    if (activeEngine === "none") {
+      companion.updateContext({ active_game: null });
+    } else {
+      const titles: Record<string, string> = {
+        temporal: "Yesterday, Today & Tomorrow",
+        timeline: "My Life Timeline",
+        prepare: "Prepare For Morning Tea & Market",
+        braid: "Experience Braid",
+        garland: "Sensory Marigold Garland",
+        reminiscence: "Reminiscence Journey",
+        route_builder: "Route Builder to Daily Market",
+      };
+      companion.updateContext({
+        active_game: {
+          game_id: activeEngine,
+          title: titles[activeEngine] || activeEngine,
+          current_question: "Gentle exploration step",
+          scaffolding_level: 0,
+        },
+      });
+    }
+  }, [activeEngine, companion.updateContext]);
 
   const handleEngineComplete = async (telemetry: GameTrialTelemetry[], summary: string) => {
     const prevEngine = activeEngine;
