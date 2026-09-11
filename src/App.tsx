@@ -28,11 +28,14 @@ function AppContent() {
 
       {currentSurface === "person" ? (
         <PersonApp onSelectSurface={setCurrentSurface} />
+      ) : currentSurface === "clinical" ? (
+        <div className="flex-1 w-full flex flex-col bg-[#F6F1EA]">
+          <ClinicalBridge onSelectSurface={setCurrentSurface} />
+        </div>
       ) : (
         <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-6">
           {currentSurface === "caregiver" && <CaregiverCopilot />}
           {currentSurface === "asha" && <CHWCopilot />}
-          {currentSurface === "clinical" && <ClinicalBridge />}
           {currentSurface === "demos" && <DemosView />}
           {currentSurface === "prototypes" && <PrototypesView />}
           {currentSurface === "assets" && <AssetStudioView />}

@@ -23,7 +23,7 @@ test("Voice Companion: Context Contract builds rich companion prompt including s
       game_id: "yesterday_today_tomorrow",
       title: "Yesterday, Today & Tomorrow",
       current_question: "Which gentle routine belongs to this afternoon in Tezpur?",
-      scaffolding_level: 1,
+      scaffold_level: "1",
     },
     current_task: "Cognitive temporal sequencing",
     audio_playing: false,
@@ -34,7 +34,7 @@ test("Voice Companion: Context Contract builds rich companion prompt including s
   assert.equal(context.page, "activity");
   assert.equal(context.visible_entity?.name, "Rina");
   assert.equal(context.active_game?.title, "Yesterday, Today & Tomorrow");
-  assert.equal(context.active_game?.scaffolding_level, 1);
+  assert.equal(context.active_game?.scaffold_level, "1");
 });
 
 test("Voice Companion: Action extraction handles [ACTION:...] tags cleanly", () => {

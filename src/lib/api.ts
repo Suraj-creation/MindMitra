@@ -112,4 +112,66 @@ export const api = {
     if (!res.ok) throw new Error("Failed to read PWM fact");
     return await res.json();
   },
+
+  // ── Caregiver Copilot Dedicated APIs ──
+  async getCaregiverOverview(): Promise<any> {
+    const res = await fetch("/v1/caregiver/overview");
+    if (!res.ok) throw new Error("Failed to fetch caregiver overview");
+    return await res.json();
+  },
+
+  async updateSupportLevel(level: number, reason: string): Promise<any> {
+    const res = await fetch("/v1/caregiver/support-level", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ level, reason }),
+    });
+    if (!res.ok) throw new Error("Failed to update support level");
+    return await res.json();
+  },
+
+  async toggleCareTask(taskId: string): Promise<any> {
+    const res = await fetch(`/v1/caregiver/tasks/${encodeURIComponent(taskId)}/toggle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) throw new Error("Failed to toggle care task");
+    return await res.json();
+  },
+
+  async postponeCareTask(taskId: string, minutes = 30): Promise<any> {
+    const res = await fetch(`/v1/caregiver/tasks/${encodeURIComponent(taskId)}/postpone`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ minutes }),
+    });
+    if (!res.ok) throw new Error("Failed to postpone care task");
+    return await res.json();
+  },
+
+  async submitCareObservation(category: string, note: string, tags: string[] = []): Promise<any> {
+    const res = await fetch("/v1/caregiver/observations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category, note, tags }),
+    });
+    if (!res.ok) throw new Error("Failed to submit care observation");
+    return await res.json();
+  },
+
+  async queryCaregiverCopilot(question: string): Promise<any> {
+    const res = await fetch("/v1/caregiver/copilot/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    if (!res.ok) throw new Error("Failed to query caregiver copilot");
+    return await res.json();
+  },
+
+  async getClinicalBrief(): Promise<any> {
+    const res = await fetch("/v1/caregiver/clinical-brief");
+    if (!res.ok) throw new Error("Failed to fetch clinical brief");
+    return await res.json();
+  },
 };
