@@ -111,7 +111,16 @@ export interface PersonExperienceProjection {
     /** True only when retrieval was attempted and FAILED -- "I can't check", not "there's nothing". */
     not_retrieved: boolean;
   };
-  people: Array<{ id: string; name: string; relationship: string; verified: boolean; phone: string | null }>;
+  people: Array<{
+    id: string;
+    name: string;
+    relationship: string;
+    verified: boolean;
+    phone: string | null;
+    /** Reachable in an emergency. Ordered by closeness, caregiver first. */
+    is_emergency?: boolean;
+    closeness?: string | null;
+  }>;
   memories: Array<{ id: string; title: string; description: string; approximate_period: string; verified: boolean }>;
   places: Array<{ id: string; name: string; significance: string | null; verified: boolean }>;
   preferences: Array<{ dimension: string; value: unknown; evidence_source: string }>;

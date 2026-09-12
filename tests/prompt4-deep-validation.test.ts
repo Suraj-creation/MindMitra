@@ -26,20 +26,33 @@ test("Golden utterances: the Prompt 4 §28 additions classify to sensible bounde
 
 // ── §29 retrieval evaluation: query-shaped, not "load everything" ──
 
-test("Retrieval planner: a PEOPLE query does not pull memories/places/preferences it doesn't need", () => {
+test("Retrieval planner: a PEOPLE query does not pull the memories and places it doesn't need", () => {
   const plan = planRetrieval("PEOPLE");
   assert.equal(plan.people, true);
   assert.equal(plan.upcoming, true); // cheap, load-bearing for most turns
   assert.equal(plan.memories, false);
   assert.equal(plan.places, false);
-  assert.equal(plan.preferences, false);
 });
 
-test("Retrieval planner: a MEMORY query pulls memories and places, not preferences", () => {
+test("Preferences load on every personal turn: they constrain HOW the assistant speaks", () => {
+  // A deliberate change from the original rule, which treated preferences as
+  // activity-only. Preferences carry avoidances the person stated themselves
+  // -- "do not rush me", "no memory tests when I lose a word" -- and those are
+  // constraints on any turn where the assistant speaks about their life, not
+  // only on activities. It costs one small indexed query, issued in parallel
+  // with the others, so it adds no measurable latency.
+  for (const intent of ["PEOPLE", "MEMORY", "ORIENTATION", "ROUTINE"] as const) {
+    assert.equal(planRetrieval(intent).preferences, true, intent + " should load preferences");
+  }
+  // Still nothing for turns that touch no personal data at all.
+  assert.equal(planRetrieval("SOCIAL").preferences, false);
+  assert.equal(planRetrieval("INFORMATION").preferences, false);
+});
+
+test("Retrieval planner: a MEMORY query pulls memories and places", () => {
   const plan = planRetrieval("MEMORY");
   assert.equal(plan.memories, true);
   assert.equal(plan.places, true);
-  assert.equal(plan.preferences, false);
 });
 
 test("Retrieval planner: crisis intent retrieves the bare minimum (speed over completeness)", () => {

@@ -56,7 +56,11 @@ export const BrahmaputraOnboarding: React.FC<BrahmaputraOnboardingProps> = ({
 
   // Collected gentle profile
   const [name, setName] = useState<string>("Aitâ Purnima");
-  const [honorific, setHonorific] = useState<string>("Woman (মহিলা / বাইদেউ / আইতা)");
+  // The value stored here is the word the companion will actually SAY, not the
+// label on the card. Storing the card label meant the assistant greeted people
+// as "Namaskar Man (পুৰুষ / ককা)" -- it read a gender category aloud as a name.
+// An empty string is a real choice: "prefer not to say" means use the name.
+  const [honorific, setHonorific] = useState<string>("Aitâ");
   const [workRole, setWorkRole] = useState<string>("Teacher (শিক্ষকতা)");
   const [preferredLang, setPreferredLang] = useState<string>("Assamese (অসমীয়া)");
   const [globalLang, setGlobalLang] = useState<string>("as");
@@ -568,22 +572,22 @@ export const BrahmaputraOnboarding: React.FC<BrahmaputraOnboardingProps> = ({
                     {
                       label: "Woman (মহিলা)",
                       subtext: "Baideu / Aitâ (বাইদেউ / আইতা)",
-                      value: "Woman (মহিলা / বাইদেউ / আইতা)",
+                      value: "Aitâ",
                     },
                     {
                       label: "Man (পুৰুষ)",
                       subtext: "Dada / Koka / Khura (ককা / দাদা)",
-                      value: "Man (পুৰুষ / ককা)",
+                      value: "Koka",
                     },
                     {
                       label: "Another identity",
                       subtext: "Gender-neutral friendly respect",
-                      value: "Another identity",
+                      value: "Bandhu",
                     },
                     {
                       label: "Prefer not to say",
                       subtext: "Just use my chosen name",
-                      value: "Prefer not to say",
+                      value: "",
                     },
                   ].map((item) => {
                     const isSelected = honorific === item.value;

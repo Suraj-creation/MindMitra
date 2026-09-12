@@ -6,7 +6,7 @@
 
 import { ClassifiedIntent } from "./types";
 import { EvidencePack, PersonExperienceProjection } from "./types";
-import { clockInZone, DEFAULT_TIME_ZONE } from "./personal-context-engine";
+import { clockInZone, DEFAULT_TIME_ZONE, minutesOfDay } from "./personal-context-engine";
 
 // Prompt 4 §21: low-risk actions (navigate, show media, start an activity) may
 // execute directly; higher-impact ones (calling a real person) must not be
@@ -320,8 +320,56 @@ export function buildDeterministicAnswer(
       };
     }
     case "HUMAN_ASSISTANCE": {
+      // Who to call, in the order this person's own relationship graph gives:
+      // primary caregiver, then close family, then the health worker, then
+      // clinical. Never improvised, never a generic "contact someone".
+      const CLOSENESS: Record<string, number> = { primary_caregiver: 0, family_core: 1, community_chw: 2, clinical: 3 };
+      const reachable = projection.people
+        .filter((p) => p.is_emergency && p.phone)
+        .sort((a, b) => (CLOSENESS[a.closeness ?? ""] ?? 9) - (CLOSENESS[b.closeness ?? ""] ?? 9));
+      const first = reachable[0] ?? null;
+      const callAction = first?.phone
+        ? withRisk({ type: "call_contact", label: `Call ${first.name}`, target: first.name, phone: first.phone })
+        : withRisk({ type: "call_contact", label: "Call Tele-MANAS (14416)", target: "Tele-MANAS", phone: "14416" });
+
+      if (classified.matched_rule === "emergency_contact_request") {
+        if (!first) {
+          return {
+            answer: `I don't have anyone recorded to call for you, ${honorific}. The Tele-MANAS helpline is always open at 14416.`,
+            asText: `মোৰ ওচৰত কাকো মাতিবলৈ নম্বৰ নাই। টেলি-মানস ১৪৪১৬ নম্বৰ সদায় খোলা আছে।`,
+            intent: "emergency_contacts",
+            action: withRisk({ type: "call_contact", label: "Call Tele-MANAS (14416)", target: "Tele-MANAS", phone: "14416" }),
+          };
+        }
+        const others = reachable.slice(1, 3).map((p) => `${p.name} (${p.relationship.replace(/_/g, " ")})`);
+        return {
+          answer:
+            `Call ${first.name}, your ${first.relationship.replace(/_/g, " ")} — ${first.phone}.` +
+            (others.length ? ` If ${first.name} doesn't answer, there is ${others.join(", and ")}.` : ""),
+          asText: `${first.name} ক মাতক — ${first.phone}।`,
+          intent: "emergency_contacts",
+          action: callAction,
+        };
+      }
+
+      if (classified.matched_rule === "emotional_support") {
+        // Meet the feeling first. No helpline script, no schedule, no attempt
+        // to fix it -- and never a correction of what they are feeling.
+        return {
+          answer:
+            `I'm here with you, ${honorific}. That sounds like a hard thing to be sitting with.` +
+            (first ? ` Would you like me to call ${first.name}?` : ""),
+          asText: `মই আপোনাৰ লগতে আছোঁ। এইটো সঁচাকৈ কঠিন কথা।`,
+          intent: "emotional_support",
+          action: first ? callAction : null,
+        };
+      }
+
       return {
-        answer: `${honorific}, you are safe right now. I am right here with you. If you need someone, the Tele-MANAS helpline is always open at 14416.`,
+        answer:
+          `${honorific}, you are safe right now. I am right here with you.` +
+          (first ? ` ${first.name} can be reached at ${first.phone}.` : "") +
+          ` If you need someone, the Tele-MANAS helpline is always open at 14416.`,
         asText: `${honorific}, আপুনি এতিয়া সম্পূৰ্ণ সুৰক্ষিত আছে। মই আপোনাৰ লগত আছোঁ। সহায়ৰ বাবে টেলি-মানস ১৪৪১৬ নম্বৰত সদায় উপলব্ধ।`,
         intent: "crisis_support",
         action: withRisk({ type: "call_contact", label: "Call Tele-MANAS (14416)", target: "Tele-MANAS", phone: "14416" }),
@@ -499,6 +547,43 @@ export function buildDeterministicAnswer(
         });
         return { ...built, intent: "routine_reassurance", action: withRisk({ type: "navigate", label: "See Today's Plan", target: "day" }) };
       }
+      // A question that names one thing -- "when do I have lunch?", "what do I
+      // do in the evening?" -- gets that thing, not the first three rows of the
+      // day. Listing the whole morning in answer to a question about lunch is
+      // the same precision failure as answering about the daughter when the
+      // granddaughter was asked for.
+      const asked = (opts.messageText || "").toLowerCase();
+      const BUCKETS: Array<[RegExp, number, number]> = [
+        [/\bmorning\b/, 5 * 60, 12 * 60],
+        [/\bafternoon\b/, 12 * 60, 17 * 60],
+        [/\bevening\b/, 17 * 60, 20 * 60],
+        [/\bnight\b/, 20 * 60, 24 * 60],
+      ];
+      const named = routines.filter((r) => {
+        const words = r.title.toLowerCase().match(/\p{L}{4,}/gu) || [];
+        return words.some((w) => asked.includes(w));
+      });
+      const bucket = BUCKETS.find(([re]) => re.test(asked));
+      const inBucket = bucket
+        ? routines.filter((r) => {
+            const m = minutesOfDay(r.time_of_day);
+            return m !== null && m >= bucket[1] && m < bucket[2];
+          })
+        : [];
+      const focused = named.length > 0 ? named : inBucket;
+
+      if (focused.length > 0) {
+        const said = focused
+          .slice(0, 3)
+          .map((r) => (r.time_of_day ? `${r.title} at ${r.time_of_day}` : r.title));
+        return {
+          answer: `${joinLabels(said)}, ${honorific}.`,
+          asText: `${joinLabels(said)}。`,
+          intent: "routine_reassurance",
+          action: withRisk({ type: "navigate", label: "See Today's Plan", target: "day" }),
+        };
+      }
+
       const parts = [
         ...routines.map((r) => (r.time_of_day ? `${r.title} at ${r.time_of_day}` : r.title)),
         ...meds.filter((m) => !m.taken).map((m) => `${m.name} at ${m.scheduled_time}`),

@@ -119,7 +119,7 @@ export interface RetrievalPlan {
 const NONE: RetrievalPlan = {
   memories: false, places: false, upcoming: false, people: false, preferences: false, day: false, dayOffset: 0,
 };
-const ALWAYS: RetrievalPlan = { ...NONE, upcoming: true, people: true };
+const ALWAYS: RetrievalPlan = { ...NONE, upcoming: true, people: true, preferences: true };
 
 /**
  * Chooses retrieval sources from the classified query (Prompt 4 §13/§37).
@@ -162,7 +162,10 @@ export function planRetrieval(input: IntentClass | ClassifiedIntent): RetrievalP
       // a reassuring guess -- so places have to be loaded for this intent.
       return { ...ALWAYS, places: true };
     case "HUMAN_ASSISTANCE":
-      // Crisis path: minimal retrieval, maximum speed -- nothing beyond who's reachable.
+      // Crisis path: minimal retrieval, maximum speed -- nothing beyond who's
+      // reachable. The response here is a fixed safety script and an emergency
+      // number; it reads no preference, and this is the worst possible path on
+      // which to add a query.
       return { ...NONE, people: true };
     case "INFORMATION":
     case "SOCIAL":
@@ -287,7 +290,15 @@ export async function buildPersonExperienceProjection(
 
   const people = peopleRaw
     .filter((p) => true) // listFamiliarPeople is already person_id-scoped by its SQL join
-    .map((p) => ({ id: p.id, name: p.name, relationship: p.relationship, verified: p.verified, phone: p.phone ?? null }));
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      relationship: p.relationship,
+      verified: p.verified,
+      phone: p.phone ?? null,
+      is_emergency: !!p.is_emergency_contact,
+      closeness: p.closeness_level ?? null,
+    }));
 
   // ── The resolved day, split into done / still ahead ────────────────────────
   // A past day is entirely "past"; a future day entirely ahead; today is split
@@ -505,6 +516,59 @@ export function buildEvidencePack(projection: PersonExperienceProjection): Evide
     });
   }
 
+  // Who to call, in the order the person's own relationship graph says. An
+  // emergency answer must never be improvised, and it must never be a generic
+  // "call someone": the escalation order is data -- primary caregiver, then
+  // close family, then the community health worker, then clinical.
+  const CLOSENESS_ORDER: Record<string, number> = {
+    primary_caregiver: 0, family_core: 1, community_chw: 2, clinical: 3,
+  };
+  const emergency = projection.people
+    .filter((p) => p.is_emergency && p.phone)
+    .sort((a, b) => (CLOSENESS_ORDER[a.closeness ?? ""] ?? 9) - (CLOSENESS_ORDER[b.closeness ?? ""] ?? 9));
+  if (emergency.length > 0) {
+    facts.push({
+      fact_id: "fact:emergency_contacts",
+      text:
+        "If help is needed, these people can be reached, in this order: " +
+        emergency.map((p) => `${p.name} (${p.relationship.replace(/_/g, " ")}, ${p.phone})`).join("; ") + ".",
+      source_type: "emergency_contact",
+      verified: true,
+      confidence: 1,
+      timestamp: projection.currentContext.now_iso,
+    });
+  }
+
+  // Preferences were retrieved and dropped in exactly the way places were.
+  // They are the richest thing onboarding collects -- what brings this person
+  // joy, how they want things explained, what to avoid -- and none of it could
+  // reach the answer layer, so none of it changed a single sentence.
+  for (const pref of projection.preferences) {
+    const v = pref.value as Record<string, unknown> | null;
+    if (!v || typeof v !== "object") continue;
+    const parts: string[] = [];
+    const list = (k: string, label: string) => {
+      const arr = v[k];
+      if (Array.isArray(arr) && arr.length) parts.push(`${label}: ${arr.join(", ")}`);
+    };
+    list("joys", "brings them joy");
+    list("topics", "likes talking about");
+    list("explanation_style", "prefers things explained");
+    list("avoidances", "avoid");
+    list("best_hours", "most alert");
+    if (typeof v.note === "string") parts.push(v.note);
+    if (typeof v.prefers === "string") parts.push(`prefers ${v.prefers}`);
+    if (parts.length === 0) continue;
+    facts.push({
+      fact_id: `fact:preference:${pref.dimension}`,
+      text: `Preference (${pref.dimension}) -- ${parts.join("; ")}.`,
+      source_type: "preference",
+      verified: pref.evidence_source !== "system_inferred",
+      confidence: pref.evidence_source === "system_inferred" ? 0.6 : 0.9,
+      timestamp: projection.currentContext.now_iso,
+    });
+  }
+
   // Places were being retrieved into the projection and then dropped here, so
   // they were invisible to both the model prompt and the grounding gate: the
   // assistant could not name the person's own home even when it had just read
@@ -599,7 +663,10 @@ export function checkGrounding(
 ): { grounded: boolean; unsupportedNames: string[]; unsupportedActivities: string[]; unsupportedTimes: string[] } {
   const normalize = (s: string) => s.normalize("NFKD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 
-  const evidenceText = normalize(pack.facts.map((f) => f.text).join("  "));
+  // Facts are joined on a newline, not a space: run together, two adjacent
+  // facts can form a phrase that neither of them contains, and the grounding
+  // check would then treat an invented phrase as supported.
+  const evidenceText = normalize(pack.facts.map((f) => f.text).join("\n"));
   const evidenceWords = new Set<string>();
   for (const f of pack.facts) {
     for (const w of f.text.match(/\p{L}+/gu) || []) {
@@ -651,4 +718,23 @@ export function checkGrounding(
     unsupportedActivities,
     unsupportedTimes,
   };
+}
+
+/**
+ * A form of address the companion can safely say out loud.
+ *
+ * Anything that looks like a picker label rather than a word -- parentheses, a
+ * slash between alternatives, or a bare gender/identity category -- is rejected
+ * in favour of the person's name. This is the guard for the bug where the
+ * onboarding card's own value was stored as the honorific and greeted aloud as
+ * though it were someone's name. The card now stores a real term, but nothing
+ * downstream should depend on that having been fixed upstream: a name is always
+ * a safe thing to call someone.
+ */
+export function safeHonorific(honorific: string | null | undefined, displayName: string): string {
+  const h = (honorific || "").trim();
+  if (!h) return displayName;
+  if (/[()\/]/.test(h)) return displayName;
+  if (/^(man|woman|male|female|another identity|prefer not to say|other)\b/i.test(h)) return displayName;
+  return h;
 }

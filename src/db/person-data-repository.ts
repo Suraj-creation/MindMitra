@@ -426,12 +426,15 @@ export interface FamiliarPersonRecord {
   verified: boolean;
   phone?: string | null;
   avatar_media_id?: string | null;
+  is_emergency_contact?: boolean;
+  closeness_level?: string | null;
 }
 
 export async function listFamiliarPeople(personId: string): Promise<FamiliarPersonRecord[]> {
   const rows = await queryDb<any>(
     `SELECT pe.id, pe.display_name AS name, r.relationship_type AS relationship,
-            (pe.verification_status = 'verified') AS verified, pe.phone, pe.avatar_media_id
+            (pe.verification_status = 'verified') AS verified, pe.phone, pe.avatar_media_id,
+            pe.is_emergency_contact, r.closeness_level
      FROM person_entities pe
      JOIN relationships r ON r.related_entity_id = pe.id
      WHERE r.person_id = $1 AND r.verification_status != 'rejected'

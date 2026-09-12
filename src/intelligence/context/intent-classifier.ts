@@ -163,6 +163,22 @@ export function classifyIntent(text: string, ctx: IntentContext = {}): Classifie
     };
   };
 
+  // "Who do I call?" is not a question about the person's circle in general --
+  // it is a request for the escalation order, and it must reach the branch that
+  // has it. Routed above small talk so "no one is here, who do I call" is not
+  // swallowed by the leading "no".
+  if (/\b(who (do|can|should) i (call|ring|phone)|who can help|i need help|call someone|is anyone there|nobody is here|no one is here)\b/.test(t)) {
+    return finish("HUMAN_ASSISTANCE", 0.9, "emergency_contact_request", { mode: "PERSONAL" });
+  }
+
+  // Distress that is real but not a crisis. This had no rule, so "I feel very
+  // alone today" fell to the generic fallback and was answered with a greeting.
+  // It carries its own matched_rule so the response layer can meet the feeling
+  // instead of reaching for the helpline script.
+  if (/\b(i (feel|am|'m) (so )?(lonely|alone|sad|low|down|frightened|scared|afraid|worried|useless|a burden)|i miss (my|him|her|them)|nobody (comes|visits|cares)|i want to go home|i feel like crying|everything is confusing)\b/.test(t)) {
+    return finish("HUMAN_ASSISTANCE", 0.85, "emotional_support", { mode: "PERSONAL" });
+  }
+
   if (CRISIS_WORDS.test(t)) {
     return finish("HUMAN_ASSISTANCE", 0.99, "crisis_language", { mode: "CONTEXTUAL", requires_retrieval: true });
   }
@@ -242,12 +258,29 @@ export function classifyIntent(text: string, ctx: IntentContext = {}): Classifie
     });
   }
 
+  // Checked before the bare temporal reference: "when do I have lunch?" opens
+  // with "when", but it is a question about a standing routine, not about a
+  // date. Answering it with the day's first three rows is the same precision
+  // failure as answering about the daughter when the granddaughter was asked
+  // for. A question naming no routine ("when is Rina coming") still falls
+  // through to TEMPORAL below.
+  if (/\b(routine|tea|chai|lunch|prayer|breakfast|dinner|supper|bath|nap|siesta)\b/.test(t)) {
+    return finish("ROUTINE", 0.75, "routine_words", { mode: "PERSONAL" });
+  }
+
   if (/\b(when|tomorrow|yesterday|this morning|tonight|after|before|last|next week)\b/.test(t)) {
     return finish("TEMPORAL", 0.75, "temporal_reference", { mode: "PERSONAL" });
   }
 
-  if (/\b(routine|tea|chai|lunch|prayer|breakfast|dinner)\b/.test(t)) {
-    return finish("ROUTINE", 0.75, "routine_words", { mode: "PERSONAL" });
+  // "What happens in the evening?" carries no possessive and no day word, so it
+  // fell through to the general-knowledge shape and was answered with a
+  // dictionary definition of the word "evening". In this app, a question about
+  // a part of the day is a question about THIS person's day.
+  if (
+    /\b(morning|afternoon|evening|night|daytime)\b/.test(t) &&
+    /\b(what|when|which|happens?|happening|do i|i do|usually|normally|comes?)\b/.test(t)
+  ) {
+    return finish("ROUTINE", 0.75, "time_of_day_routine", { mode: "PERSONAL" });
   }
 
   if (/\b(medicine|medication|tablet|pill|dose)\b/.test(t)) {

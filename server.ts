@@ -39,7 +39,8 @@ import { checkB2Health, getPresignedUploadUrl, getPresignedDownloadUrl } from ".
 import { runSchemaMigration } from "./src/db/migrate";
 import * as personDataRepo from "./src/db/person-data-repository";
 import { seedPersonasIfEmpty } from "./src/db/seed-personas";
-import { buildPersonExperienceProjection, buildEvidencePack, checkGrounding, planRetrieval } from "./src/intelligence/context/personal-context-engine";
+import { seedRichLife, getEmergencyContacts } from "./src/db/seed-rich-life";
+import { buildPersonExperienceProjection, buildEvidencePack, checkGrounding, planRetrieval, safeHonorific } from "./src/intelligence/context/personal-context-engine";
 import { classifyIntent } from "./src/intelligence/context/intent-classifier";
 import { buildDeterministicAnswer } from "./src/intelligence/context/companion-responder";
 import {
@@ -138,6 +139,26 @@ TONE:
 - Use the honorific supplied in the context; never invent a name or nickname.
 - Dignity: never treat the person as a patient, and never mention dementia, memory loss, cognitive decline or test scores.
 - Repetition grace: if the same question is asked again, answer it again, freshly and patiently. Never say "as I said earlier" or "remember?".
+
+HOW THIS PERSON WANTS TO BE SPOKEN TO:
+The known facts may include "Preference" lines -- what brings this person joy, how they like things explained, what to avoid, and when they are most alert. Follow them. They are instructions from the person themselves, not background colour:
+- If an avoidance is listed (rushing, quizzing, loud or sudden talk), never do that thing.
+- If they prefer short and simple, be shorter than you think you need to be.
+- If a joy is listed, that is what is worth talking about when there is a choice.
+
+WHEN SOMEONE NEEDS HELP REACHING A PERSON:
+The known facts may include an "emergency contacts" line listing real people, real numbers, and the order to try them. If the person asks who to call, says they need help, feels unwell, or is frightened and alone:
+- Name the first person on that list and offer to call them. Use the name and relationship, not "your emergency contact".
+- Never invent a name, a number, or a service that is not in the facts.
+- If there is no such line, say you don't have anyone recorded to call, and mention Tele-MANAS 14416.
+
+EMOTIONAL SUPPORT -- WHAT TO DO WHEN SOMEONE IS UPSET:
+- Sit with the feeling before doing anything else. "That sounds hard" comes before any fact.
+- Never correct or argue with a distressing belief, and never say "no, that's not right". If someone asks for a person who has died, do not assert the death; speak warmly about that person in the past, and gently bring the present alongside it.
+- Never quiz, test, or ask them to remember something to prove they can.
+- Loneliness, boredom and fear are real answers to "what's wrong". Respond to them; do not redirect to a schedule.
+- Offer a next step only after the feeling has been met, and only one: someone to call, a song, a photograph, or simply staying.
+- You are not a therapist and must not act as one. Warmth, presence, and the right person's phone number are what you have.
 
 HEALTH & CRISIS BOUNDARIES:
 - Never give medical advice, adjust medication, or diagnose.
@@ -392,7 +413,7 @@ async function startServer() {
           identity.displayName = dbProfile.name;
         }
         if (dbProfile.honorific) {
-          identity.honorific = dbProfile.honorific;
+          identity.honorific = safeHonorific(dbProfile.honorific, identity.displayName);
         }
         if (dbProfile.preferred_language && /english/i.test(dbProfile.preferred_language)) {
           lang = "en";
@@ -462,7 +483,7 @@ async function startServer() {
       if (!PERSON_IDENTITY[personId]) {
         PERSON_IDENTITY[personId] = {
           displayName: name,
-          honorific: honorific || name,
+          honorific: safeHonorific(honorific, name),
           culture: /assam/i.test(preferredLanguage) ? "Assamese (Tezpur)" : "Northeast India",
           timeZone: "Asia/Kolkata",
           actorId: `actor:${personId.replace(/^person:/, "")}`,
@@ -470,7 +491,7 @@ async function startServer() {
       } else {
         PERSON_IDENTITY[personId].displayName = name;
         if (honorific) {
-          PERSON_IDENTITY[personId].honorific = honorific;
+          PERSON_IDENTITY[personId].honorific = safeHonorific(honorific, name);
         }
       }
 
@@ -512,7 +533,10 @@ async function startServer() {
 
       if (record) {
         identity.displayName = record.name || identity.displayName;
-        if (record.honorific) identity.honorific = record.honorific;
+        // Guarded like every other site that writes an honorific: identityFor
+        // returns the shared PERSON_IDENTITY row by reference, so an unguarded
+        // write here poisons the form of address for every later turn.
+        identity.honorific = safeHonorific(record.honorific, identity.displayName);
 
         res.json({
           status: "ok",
@@ -763,6 +787,18 @@ async function startServer() {
       responseDirective = `This is a general-knowledge question, not a question about ${identity.displayName}'s own life. Answer it directly and simply in 1-2 spoken sentences. Do not use the facts above, and do not mention their schedule, family, records or notes at all -- not even to say you have nothing recorded.`;
     } else if (classified.intent === "GAME_ASSISTANCE") {
       responseDirective = `Give one gentle, encouraging hint for the activity in progress, in a single sentence. Start with the hint itself -- no preamble, and never say you have no recorded answer. Do not give away the answer, and do not introduce any object, place or step that is not in the known facts.`;
+    } else if (classified.matched_rule === "emergency_contact_request") {
+      responseDirective = [
+        `They are asking who to call, or saying they need someone. The known facts contain an "emergency contacts" line with real names, relationships and numbers in the order to try them.`,
+        `Name the FIRST person on that list with their relationship and number, and offer to call them. One or two sentences.`,
+        `If there is no such line, say you don't have anyone recorded and give Tele-MANAS 14416. Never invent a name or a number.`,
+      ].join(" ");
+    } else if (classified.matched_rule === "emotional_support") {
+      responseDirective = [
+        `They are telling you how they feel, not asking a question. Acknowledge the feeling first, in their own terms, in one short sentence.`,
+        `Do not list their schedule, do not correct them, do not quiz them, and do not reach for the helpline -- this is sadness or loneliness, not a crisis.`,
+        `Then, and only then, you may offer ONE thing: calling a named person from the facts, or simply staying with them. Keep it to two short sentences in total.`,
+      ].join(" ");
     } else if (classified.intent === "HUMAN_ASSISTANCE") {
       responseDirective = `Reassure them calmly and briefly, and mention that the Tele-MANAS helpline 14416 is always available.`;
     } else if (classified.matched_rule === "refusal" || classified.matched_rule === "stop_or_pause") {
@@ -3428,6 +3464,35 @@ If an action is clearly being requested, you may append one tag at the end (e.g.
     }
   });
 
+  /**
+   * Re-run the life seed. Useful after editing the seed, and after a day
+   * boundary passes while the server is still up -- the day-relative events
+   * are rebuilt, so "yesterday" stays correct.
+   */
+  app.post("/v1/demo/seed-life", async (_req: Request, res: Response) => {
+    try {
+      const summary = await seedRichLife();
+      res.json({ status: "seeded", summary });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : "Seeding failed." });
+    }
+  });
+
+  /**
+   * Who this person can reach, in escalation order. Read straight from the
+   * relationship graph so there is no separate emergency list to drift out of
+   * sync with who their people actually are.
+   */
+  app.get("/v1/persons/:personId/emergency-contacts", async (req: Request, res: Response) => {
+    try {
+      const contacts = await getEmergencyContacts(req.params.personId);
+      res.json({ person_id: req.params.personId, count: contacts.length, contacts });
+    } catch (err: unknown) {
+      console.warn("[Emergency] lookup failed:", err instanceof Error ? err.message : err);
+      res.json({ person_id: req.params.personId, count: 0, contacts: [] });
+    }
+  });
+
   /** Re-open a previously planned experience by id (the chatbot's deep link). */
   app.get("/v1/experiences/:specId", async (req: Request, res: Response) => {
     const personId = String(req.query.person_id || "person:purnima");
@@ -3551,10 +3616,22 @@ If an action is clearly being requested, you may append one tag at the end (e.g.
     console.warn("Non-fatal error during CHW database initialization:", err.message);
   });
 
-  // Seed the two personal-world personas into Neon if person_entities is empty
-  seedPersonasIfEmpty().catch((err) => {
-    console.warn("Non-fatal error during persona seeding:", err.message);
-  });
+  // Seed the two personal-world personas into Neon if person_entities is empty,
+  // then bring each life up to full: family with an escalation order, the whole
+  // day's routine, several days of real events, places, memories, preferences
+  // and goals. Runs on every boot rather than only when empty, because the
+  // day-relative events have to be rebuilt -- "yesterday" has to still be
+  // yesterday tomorrow.
+  seedPersonasIfEmpty()
+    .then(() => seedRichLife())
+    .then((summary) => {
+      for (const s of summary) {
+        console.log(`[Seed] ${s.person_id}: ${Object.entries(s.counts).map(([k, v]) => `${v} ${k}`).join(", ")}`);
+      }
+    })
+    .catch((err) => {
+      console.warn("Non-fatal error during persona seeding:", err.message);
+    });
 
   // Initialize Clinical database tables and seed if empty
   initClinicalDbTables().catch((err) => {

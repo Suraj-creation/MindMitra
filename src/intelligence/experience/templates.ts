@@ -545,20 +545,18 @@ const personRecognition: ExperienceTemplate = {
   compose: (ctx) => {
     const { ev } = ctx;
 
-    // person -> photo, via an explicit avatar or a memory they are linked to.
+    // A portrait has to be declared, never inferred.
+    //
+    // This used to fall back to "any photo attached to any memory this person
+    // is linked to", which is not the same thing at all: the memory of Purnima
+    // weaving a mekhela for her daughter is linked to the daughter, so "Who is
+    // this?" was asked over a photograph of silk cloth. A memory FEATURING
+    // someone is not a picture OF them, and guessing otherwise teaches a wrong
+    // association about a real family member. Only an explicit avatar counts.
     const photoFor = (p: EvidencePerson): { media: ResolvedMedia; via: string } | null => {
-      if (p.avatar_media_id) {
-        const m = ev.media.get(p.avatar_media_id);
-        if (m) return { media: m, via: p.id };
-      }
-      for (const mem of ev.memories) {
-        if (!mem.people_refs.some((r) => r.person_entity_id === p.id)) continue;
-        for (const id of mem.media_refs) {
-          const m = ev.media.get(id);
-          if (m) return { media: m, via: mem.id };
-        }
-      }
-      return null;
+      if (!p.avatar_media_id) return null;
+      const m = ev.media.get(p.avatar_media_id);
+      return m ? { media: m, via: p.id } : null;
     };
 
     const withPhotos = ev.people
