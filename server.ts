@@ -40,7 +40,7 @@ import { runSchemaMigration } from "./src/db/migrate";
 import * as personDataRepo from "./src/db/person-data-repository";
 import { seedPersonasIfEmpty } from "./src/db/seed-personas";
 import { seedRichLife, getEmergencyContacts } from "./src/db/seed-rich-life";
-import { buildPersonExperienceProjection, buildEvidencePack, checkGrounding, planRetrieval, safeHonorific } from "./src/intelligence/context/personal-context-engine";
+import { buildPersonExperienceProjection, buildEvidencePack, checkGrounding, planRetrieval, safeHonorific, sanitizeOnboardingHonorific } from "./src/intelligence/context/personal-context-engine";
 import { classifyIntent } from "./src/intelligence/context/intent-classifier";
 import { buildDeterministicAnswer } from "./src/intelligence/context/companion-responder";
 import {
@@ -448,7 +448,10 @@ async function startServer() {
       const body = req.body || {};
       const personId = body.person_id || body.personId || "person:purnima";
       const name = (body.name || "").trim() || "Purnima";
-      const honorific = body.honorific || "";
+      // Sanitised at the boundary where it is written, not only where it is
+      // later read: a bad value that never reaches the database can never be
+      // replayed by a stale client, a direct API call, or a cached bundle.
+      const honorific = sanitizeOnboardingHonorific(body.honorific, name);
       const workBackground = body.workBackground || body.work_background || "";
       const preferredLanguage = body.preferredLanguage || body.preferred_language || "Assamese (অসমীয়া)";
       const joys = Array.isArray(body.joys) ? body.joys : [];

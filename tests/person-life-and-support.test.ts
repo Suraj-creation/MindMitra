@@ -352,3 +352,52 @@ test("Two different lives still produce different activities", async () => {
   const lb = b.spec.steps.flatMap((s) => s.choices.map((c) => c.label));
   for (const label of lb) assert.ok(!la.includes(label), `"${label}" appears in both lives`);
 });
+
+test("Re-seeding twice in a row never loses a place's photograph", async () => {
+  // A real regression: the place_media reconciliation delete ran AFTER the
+  // places loop had already inserted the link for this run, so every place
+  // photo was wiped out on every single seed -- PLACE_RECOGNITION silently
+  // declined for every person, every time, and nothing in the counts summary
+  // said so (place count was still correct; only the photo link was gone).
+  await seedRichLife();
+  await seedRichLife();
+
+  for (const person of [PURNIMA, NEKOMBO]) {
+    const linked = await queryDb<{ n: number }>(
+      `SELECT count(*)::int AS n FROM place_media pm
+       JOIN familiar_places p ON p.id = pm.place_id
+       WHERE p.person_id = $1`,
+      [person]
+    );
+    assert.ok(linked[0].n > 0, `${person}: no place has a photograph after two seed runs`);
+  }
+
+  const r = await planExperience({ personId: PURNIMA, trigger: "lets_do_something", preferTemplate: "PLACE_RECOGNITION", language: "en" });
+  assert.equal(r.status, "ready", `PLACE_RECOGNITION should compose after re-seeding: ${(r as any).detail ?? ""}`);
+});
+
+test("A picker label is rejected at the WRITE boundary, not only softened when read", async () => {
+  // The bug this closes: safeHonorific() was applied at every READ site, but
+  // saveOnboardingProfileRecord persisted whatever the client sent, completely
+  // unguarded. A stale frontend bundle (or a direct API call replaying an old
+  // payload) put the picker label straight back into the database -- twice,
+  // once before any guard existed and once after, because only reads were
+  // protected. The database is the thing that must never hold it.
+  const { sanitizeOnboardingHonorific } = await import("../src/intelligence/context/personal-context-engine");
+  for (const label of [
+    "Man (পুৰুষ / ককা)",
+    "Woman (মহিলা / বাইদেউ / আইতা)",
+    "Another identity",
+    "Prefer not to say",
+  ]) {
+    assert.equal(
+      sanitizeOnboardingHonorific(label, "Purnima"),
+      "",
+      `"${label}" must never be written to the database at all`
+    );
+  }
+  // A real, sayable term of address is written through untouched.
+  for (const good of ["Aitâ", "Koka", "Baideu"]) {
+    assert.equal(sanitizeOnboardingHonorific(good, "Purnima"), good);
+  }
+});

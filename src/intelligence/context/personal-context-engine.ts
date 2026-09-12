@@ -738,3 +738,26 @@ export function safeHonorific(honorific: string | null | undefined, displayName:
   if (/^(man|woman|male|female|another identity|prefer not to say|other)\b/i.test(h)) return displayName;
   return h;
 }
+
+/**
+ * What may be persisted as an onboarding honorific.
+ *
+ * safeHonorific() above is a read-side guard: every consumer of a stored
+ * honorific runs it through that function before speaking it aloud. That
+ * protects what the assistant SAYS, but it does nothing to protect what gets
+ * WRITTEN -- a stale frontend bundle, a direct API call, or a replayed request
+ * can still persist a picker label straight into the database, and it will
+ * sit there corrupted until someone notices. (This happened: the exact label
+ * "Man (পুৰুষ / ককা)" was written to onboarding_profiles.honorific twice,
+ * once before this function existed and once after -- because only the read
+ * side was guarded.)
+ *
+ * Untrusted input is sanitised where it is written, not only where it is
+ * read. Returns "" (the same value "prefer not to say" already uses, and
+ * which every reader already treats as "fall back to the display name") for
+ * anything that is not a real, sayable term of address.
+ */
+export function sanitizeOnboardingHonorific(raw: string | null | undefined, displayName: string): string {
+  const resolved = safeHonorific(raw, displayName);
+  return resolved === displayName ? "" : resolved;
+}

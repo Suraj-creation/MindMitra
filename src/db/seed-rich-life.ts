@@ -416,6 +416,14 @@ const NEKOMBO: LifeSeed = {
 async function seedOne(life: LifeSeed): Promise<void> {
   const p = life.personId;
 
+  // Media links are reconciled before anything is (re)inserted this run, not
+  // after: a delete placed later in this function ran AFTER the places loop
+  // below had already inserted place_media, so every seeded place photo was
+  // wiped out on every single run. Ordering this first means the delete can
+  // never race an insert -- nothing below has run yet.
+  await queryDb(`DELETE FROM memory_media WHERE memory_id IN (SELECT id FROM memory_items WHERE person_id = $1)`, [p]);
+  await queryDb(`DELETE FROM place_media WHERE place_id IN (SELECT id FROM familiar_places WHERE person_id = $1)`, [p]);
+
   // ── Media ────────────────────────────────────────────────────────────────
   for (const m of life.media) {
     await queryDb(
@@ -467,18 +475,6 @@ async function seedOne(life: LifeSeed): Promise<void> {
   }
 
   // ── Memories, with their photographs and the people in them ──────────────
-  // Links are reconciled, not just inserted: removing a photo from the seed has
-  // to actually remove it, or the activity keeps using a picture the seed no
-  // longer claims.
-  await queryDb(
-    `DELETE FROM memory_media WHERE memory_id IN (SELECT id FROM memory_items WHERE person_id = $1)`,
-    [p]
-  );
-  await queryDb(
-    `DELETE FROM place_media WHERE place_id IN (SELECT id FROM familiar_places WHERE person_id = $1)`,
-    [p]
-  );
-
   for (const mem of life.memories) {
     await queryDb(
       `INSERT INTO memory_items (id, person_id, memory_type, title, assamese_title, description, temporal_frame, approximate_period, source, verification_status, verified_by, verified_at, confidence, sensitivity, is_sensitive, game_eligible, visibility_scope, consent_scope, cultural_context)
